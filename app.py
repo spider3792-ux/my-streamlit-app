@@ -1,6 +1,6 @@
 
 
-import os, json, smtplib
+import os, json, smtplib, re   # ★ re 추가 (음성용 텍스트 정리)
 import pandas as pd
 import streamlit as st
 from openai import OpenAI
@@ -12,6 +12,15 @@ client = OpenAI()
 
 # 이메일 요청 시 받을 주소 (음성 인식 오류를 피하려고 코드에 고정)
 MY_EMAIL = "spider379@naver.com"
+
+# ★ [추가 기능 2] 대화 기록 최대 개수 (질문 1 + 답변 1 = 2개 → 10이면 최근 5번의 대화)
+MAX_HISTORY = 10
+
+# ★ [추가 기능 3] 음성용 텍스트 정리: 마크다운 기호를 빼야 TTS가 매끄럽게 읽음
+def to_speech_text(text):
+    text = re.sub(r"[#*`>|]", "", text)              # 제목·굵게 등 기호 제거
+    text = re.sub(r"^\s*-\s*", "", text, flags=re.M)  # 줄 앞 목록 기호 '-' 제거
+    return text[:4000]                                # TTS 입력 길이 한도
 
 # 에이블 역할
 sys_role = """
@@ -32,6 +41,8 @@ sys_role = """
 - 업무 세부 내용에는 회의에서 언급된 방향과 조건을 포함합니다.
 - 기한은 회의에서 해당 업무에 대해 명시적으로 언급된 경우에만 적습니다. 추측하지 않습니다.
 - 이메일은 김 대리가 요청한 경우에만 보내고 이메일 본문은 마크다운 기호 없이 작성합니다.
+- 이메일 요청이 있으면 반드시 send_email 도구를 사용해 실제로 보냅니다. 도구를 쓰지 않고 보냈다고 말하지 않습니다.
+- 받는 사람 주소는 [김 대리 이메일 주소]에 적힌 값만 사용합니다.
 """
 
 # ── 이메일 발송 함수 (미션 1) ──
@@ -176,6 +187,7 @@ else:
 
 # ── 화면: 음성 녹음 + 실행 버튼 ──
 audio_value = st.audio_input("무엇을 도와드릴까요?")
+voice_on = st.toggle("🔊 답변을 음성으로 듣기", value=True)   # ★ [추가 기능 3] 음성 켜기/끄기
 
 if st.button("실행"):
     if audio_value is None:
@@ -202,14 +214,24 @@ if st.button("실행"):
 {meeting_text}
 """
 
+                # 음성 요청에 '메일'이 들어 있으면 이메일 도구를 반드시 사용
+                # ('이 메일', '이메일' 모두 잡히도록 '메일'로 검사)
+                wants_email = "메일" in transcript.text
+                if wants_email:
+                    choice = {"type": "function", "name": "send_email"}
+                else:
+                    choice = "auto"
+
                 # 1단계: 질문 + 도구 정의 전달
-                # auto: 요청 시에만 도구 사용 / parallel False: 메일 한 통만
+                # parallel False: 메일 한 통만
                 response = client.responses.create(
                     model="gpt-4o-mini",
-                    input=[{"role": "system", "content": sys_role},
-                           {"role": "user", "content": prompt}],
+                    # ★ [추가 기능 1] 멀티턴: 역할 → 이전 대화 → 이번 질문 순서로 전달
+                    input=[{"role": "system", "content": sys_role}]
+                          + st.session_state.messages
+                          + [{"role": "user", "content": prompt}],
                     tools=tools,
-                    tool_choice="auto",
+                    tool_choice=choice,
                     parallel_tool_calls=False,
                     temperature=0
                 )
@@ -256,10 +278,21 @@ if st.button("실행"):
             st.markdown("### AI 답변")
             st.markdown(answer)   # 마크다운(###, **)을 서식으로 변환해 표시
 
+            # ★ [추가 기능 3] LLM 최종 응답을 음성으로 즉시 재생 (미션 5·6 TTS)
+            if voice_on:
+                with st.spinner("음성을 준비하고 있습니다.."):
+                    speech = client.audio.speech.create(
+                        model="gpt-4o-mini-tts",
+                        voice="nova",
+                        input=to_speech_text(answer),
+                        instructions="비서가 담당자에게 얘기하는 정중한 말투로 빠뜨리지 말고 또박또박 읽어주세요."
+                    )
+                st.audio(speech.content, format="audio/mp3", autoplay=True)
+
             # 대화 히스토리 저장 (질문·답변 한 쌍씩, 최근 10개만 유지)
             st.session_state.messages.append({"role": "user", "content": transcript.text})
             st.session_state.messages.append({"role": "assistant", "content": answer})
-            st.session_state.messages = st.session_state.messages[-10:]
+            st.session_state.messages = st.session_state.messages[-MAX_HISTORY:]   # ★ 숫자를 변수로
 
         except Exception as e:
             # API·네트워크 오류 시 앱이 멈추지 않고 안내만 표시 (종합실습6)
@@ -271,6 +304,10 @@ if st.session_state.messages:
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
+    # ★ [추가 기능 2] 대화 기록 지우기 (새 회의록으로 바꿀 때 이전 대화가 섞이지 않게)
+    if st.button("🗑️ 대화 기록 지우기"):
+        st.session_state.messages = []
+        st.rerun()   # 화면을 바로 다시 그려 기록을 지움
 
 # 추가 기능: 업무 우선순위 분석 (아이젠하워 매트릭스)
 
@@ -342,9 +379,10 @@ if st.button("우선순위 분석"):
 # ══════════════════════════════════════════════════════════════
 # 추가 기능 2: 마감 기한 역산 캘린더 (Action Scheduler)
 #  - 이 셀은 app.py 끝에 "이어 붙이기"(-a) 합니다.
-#  - 반드시 위의 app.py 셀(%%writefile app.py)을 먼저 실행한 뒤, 이 셀을 한 번만 실행하세요.
+#  - ⚠️ app.py 셀(%%writefile app.py)을 실행한 직후, 이 셀을 한 번만 실행하세요.
 # ══════════════════════════════════════════════════════════════
 from datetime import date, timedelta
+import re
 
 # ── ① 일정 추출용 출력 스키마 (05 실습 JSON 구조화) ──
 schedule_schema = {
@@ -392,6 +430,7 @@ schedule_template = """
 - 김 대리에게 배정된 업무를 업무 하나당 한 항목씩 빠짐없이 모두 적으세요.
 - 기한이 없는 업무도 반드시 포함하세요. (기한표현, 기한일수는 null)
 - 일정명은 회의록의 구체적인 업무명으로 쓰세요.
+- 보고서 제출처럼 업무의 결과물 기한은 별도 항목으로 만들지 말고, 그 업무의 기한으로 적으세요.
 
 [주요일정]
 - 신제품 출시일처럼 회의에서 시점이 정해진 전체 일정만 적으세요.
@@ -503,7 +542,7 @@ if st.button("일정 추출"):
                 if key.startswith(("use_", "due_")):
                     del st.session_state[key]
 
-                        # 두 목록을 하나로 합치면서 구분 표시 (김 대리 업무가 먼저 나오게)
+            # 두 목록을 하나로 합치면서 구분 표시 (김 대리 업무가 먼저 나오게)
             schedule = []
             for item in data["김대리업무"]:
                 schedule.append({**item, "구분": "김 대리 업무"})
@@ -526,7 +565,11 @@ if st.session_state.schedule:
         # "null" 글자도 기한 없음으로 처리
         expr = item["기한표현"] if item["기한표현"] not in (None, "", "null") else None
 
-        due = calc_due(base_day, expr, item["기한일수"])
+        days = item["기한일수"]
+        # '출시 2주 전'처럼 다른 일정 기준 시점은 AI가 계산한 일수를 쓰지 않음
+        if expr and re.search(r"\d+\s*(주|일)\s*전", expr):
+            days = None
+        due = calc_due(base_day, expr, days)
         expr = expr or "기한 미정"
 
         c1, c2, c3 = st.columns([1, 3, 2])
