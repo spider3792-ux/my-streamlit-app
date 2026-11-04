@@ -39,14 +39,19 @@ def send_email(to, subject, body):
     sender = os.getenv("GMAIL_ADDRESS")
     password = os.getenv("GMAIL_APP_PASSWORD")
 
-    msg = MIMEText(body)
+    # Secrets에 값이 없으면 연결 전에 바로 안내
+    if not sender or not password:
+        return {"status": "failed",
+                "error": "GMAIL_ADDRESS 또는 GMAIL_APP_PASSWORD가 설정되지 않았습니다."}
+
+    msg = MIMEText(body, "plain", "utf-8")   # 한글 본문 깨짐 방지
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = to
 
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as s:
-            s.starttls()
+        # 465 포트: 처음부터 SSL로 연결 (클라우드 서버에서 더 안정적)
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as s:
             s.login(sender, password)
             s.sendmail(sender, to, msg.as_string())
         return {"status": "success"}
