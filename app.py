@@ -16,7 +16,8 @@ MY_EMAIL = "spider379@naver.com"
 IMAGE_PATH = "able.png"
 
 # 사이드바 메뉴 (아래 셀들도 이 이름으로 화면을 나눔)
-PAGES = ["🎙️ AI 비서", "📊 업무 우선순위 분석", "📅 마감 캘린더", "📨 팔로업 메일", "🎧 출근길 브리핑"]
+PAGES = ["🎙️ AI 비서", "📊 업무 우선순위 분석", "📅 마감 캘린더", "📨 팔로업 메일", "🎧 출근길 브리핑",
+         "🍃 오늘의 할 일"]
 
 # 대화 기록 최대 개수 (질문 1 + 답변 1 = 2개 → 10이면 최근 5번의 대화)
 MAX_HISTORY = 10
@@ -163,6 +164,13 @@ def classify(urgent, important):
     else:
         return "위임 검토"
 
+# ── 이메일 요청인지 판단 ('메일' + '보내다/전송/발송'이 함께 있어야 요청으로 봄) ──
+def wants_email(question):
+    q = question.replace(" ", "")                        # '이 메일로'처럼 띄어 써도 인식
+    has_mail = "메일" in q or "email" in q.lower()
+    has_send = re.search(r"보내|전송|발송|송부", q) is not None
+    return has_mail and has_send
+
 # ── 에이블에게 질문하기 (음성·텍스트 대화 공통) ──
 def ask_able(question):
     """질문 → LLM 호출(이메일 도구 포함) → (답변, 이메일 발송 결과) 반환"""
@@ -177,23 +185,21 @@ def ask_able(question):
 {st.session_state.meeting_text}
 """
 
-    # '메일'이 들어 있으면 이메일 도구를 반드시 사용, 아니면 LLM이 판단
-    if "메일" in question:
-        choice = {"type": "function", "name": "send_email"}
-    else:
-        choice = "auto"
-
-    # 1단계: 역할 → 이전 대화(멀티턴) → 이번 질문 + 도구 정의 전달
-    response = client.responses.create(
-        model="gpt-4o-mini",
-        input=[{"role": "system", "content": sys_role}]
-              + st.session_state.messages
-              + [{"role": "user", "content": prompt}],
-        tools=tools,
-        tool_choice=choice,
-        parallel_tool_calls=False,
-        temperature=0
-    )
+    # 1단계: 역할 → 이전 대화(멀티턴) → 이번 질문
+    request = {
+        "model": "gpt-4o-mini",
+        "input": [{"role": "system", "content": sys_role}]
+                 + st.session_state.messages
+                 + [{"role": "user", "content": prompt}],
+        "temperature": 0
+    }
+    # 이메일 도구는 '메일을 보내 달라'는 요청이 확실할 때만 전달 (파이썬이 판단)
+    #  - 요청이 없으면 도구 자체를 주지 않아서, 이전 대화에 메일 요청이 있어도 다시 보내지 않음
+    if wants_email(question):
+        request["tools"] = tools
+        request["tool_choice"] = {"type": "function", "name": "send_email"}
+        request["parallel_tool_calls"] = False     # 메일 한 통만
+    response = client.responses.create(**request)
 
     tool_calls = [item for item in response.output if item.type == "function_call"]
     if not tool_calls:
@@ -262,6 +268,17 @@ with st.sidebar:
     page = st.radio("기능 선택", PAGES, label_visibility="collapsed")
     st.divider()
 
+    # 회의록 업로드 (사이드바에 있어서 어느 메뉴에서든 올리고 바꿀 수 있음)
+    st.subheader("📄 회의록 업로드")
+    uploaded_file = st.file_uploader("회의록 파일 (txt)", type=["txt"], label_visibility="collapsed")
+    if uploaded_file is not None:
+        st.session_state.meeting_text = uploaded_file.read().decode("utf-8")
+    if st.session_state.meeting_text:
+        st.success("회의록이 준비되었습니다.")
+    else:
+        st.info("회의록 파일을 업로드하면 회의 내용을 바탕으로 답변합니다.")
+    st.divider()
+
 meeting_text = st.session_state.meeting_text   # 모든 메뉴에서 같은 회의록 사용
 
 
@@ -273,18 +290,11 @@ if page == PAGES[0]:
 
     # ── 왼쪽: 회의록 업로드 + 음성 요청 ──
     with col_left:
-        st.subheader("📄 회의록")
-        uploaded_file = st.file_uploader("회의록 파일 업로드 (txt)", type=["txt"])
-        if uploaded_file is not None:
-            st.session_state.meeting_text = uploaded_file.read().decode("utf-8")
-            meeting_text = st.session_state.meeting_text
-
+        st.subheader("📄 회의록 미리보기")
         if meeting_text == "":
-            st.info("회의록 파일을 업로드하면 회의 내용을 바탕으로 답변합니다.")
+            st.caption("사이드바에서 회의록 파일을 업로드하면 여기에 내용이 표시됩니다.")
         else:
-            st.success("회의록이 준비되었습니다.")
-            with st.expander("회의록 미리보기"):
-                st.text_area("회의록 내용", meeting_text, height=200, label_visibility="collapsed")
+            st.text_area("회의록 내용", meeting_text, height=250, label_visibility="collapsed")
 
         st.divider()
         st.subheader("🎙️ 음성으로 요청하기")
@@ -451,12 +461,14 @@ if page == PAGES[1]:
 
 # ── 사이드바 아래쪽: 회의록 상태 · 저장된 대화 ──
 with st.sidebar:
-    st.subheader("📋 회의록 상태")
-    if st.session_state.meeting_text:
-        st.success("회의록 준비됨")
-    else:
-        st.warning("회의록 없음 · 'AI 비서' 메뉴에서 업로드")
-    st.metric("저장된 대화", f"{len(st.session_state.messages) // 2}건")
+    status = "✅" if st.session_state.meeting_text else "⬜"
+    st.subheader(f"📋 회의록 상태 {status}")
+    # 저장된 대화 수 (st.metric보다 한 단계 작은 글자)
+    st.markdown(
+        f"<p style='font-size:0.875rem; margin:0;'>저장된 대화</p>"
+        f"<p style='font-size:1.75rem; margin:0;'>{len(st.session_state.messages) // 2}건</p>",
+        unsafe_allow_html=True
+    )
 
 # ══════════════════════════════════════════════════════════════
 # 메뉴 3: 마감 캘린더 (앱 안 달력 + .ics 다운로드)
@@ -626,7 +638,7 @@ if page == PAGES[2]:
 
     if c2.button("🔍 회의록에서 일정 추출", type="primary", width="stretch"):
         if meeting_text == "":
-            st.warning("먼저 'AI 비서' 메뉴에서 회의록 파일을 업로드해 주세요.")
+            st.warning("먼저 사이드바에서 회의록 파일을 업로드해 주세요.")
         else:
             try:
                 with st.spinner("회의록에서 일정을 찾고 있습니다.."):
@@ -840,7 +852,7 @@ if page == PAGES[3]:
 
     if st.button("초안 만들기", key="fu_make", type="primary"):
         if meeting_text == "":
-            st.warning("먼저 'AI 비서' 메뉴에서 회의록 파일을 업로드해 주세요.")
+            st.warning("먼저 사이드바에서 회의록 파일을 업로드해 주세요.")
         else:
             try:
                 with st.spinner("필요한 자료를 찾고 메일 초안을 쓰고 있습니다.."):
@@ -926,7 +938,7 @@ if page == PAGES[4]:
 
     if st.button("브리핑 만들기", key="br_make", type="primary"):
         if meeting_text == "":
-            st.warning("먼저 'AI 비서' 메뉴에서 회의록 파일을 업로드해 주세요.")
+            st.warning("먼저 사이드바에서 회의록 파일을 업로드해 주세요.")
         else:
             try:
                 with st.spinner("브리핑 원고를 쓰고 있습니다.."):
@@ -961,3 +973,78 @@ if page == PAGES[4]:
                            file_name="able_briefing.mp3", mime="audio/mpeg")
         with st.expander("📄 브리핑 원고 보기"):
             st.write(b["script"])
+
+# ══════════════════════════════════════════════════════════════
+# 메뉴 6: 🍃 오늘의 할 일 (김 대리 업무 체크리스트)
+#  - ⚠️ 출근길 브리핑 셀 다음에, 이 셀을 한 번만 실행하세요.
+#  - 업무 목록은 '📅 마감 캘린더'에서 추출한 일정(st.session_state.schedule)을 그대로 사용
+#  - 여기서 완료를 체크하면 캘린더의 완료 표시(✅)에도 바로 반영됨
+# ══════════════════════════════════════════════════════════════
+
+def today_group(item, today):
+    """업무를 마감 상황별로 묶기"""
+    if not item.get("use") or not item.get("due"):
+        return "🗓️ 기한 확인 필요"
+    if item["due"] < today:
+        return "⚠️ 기한 경과"
+    if item["due"] == today:
+        return "🔥 오늘 마감"
+    return "📋 앞으로 할 일"
+
+def save_today_done(index, key):
+    """체크박스를 바꾸면 일정 목록의 완료 여부를 저장"""
+    st.session_state.schedule[index]["done"] = st.session_state[key]
+    st.session_state.sched_ver += 1    # 캘린더의 완료 체크칸도 새 값으로 다시 그리기
+
+if page == PAGES[5]:
+    st.subheader("🍃 오늘의 할 일")
+    today = kst_today()                 # 캘린더 셀의 한국 시간 기준 오늘
+    st.caption(f"{today:%Y.%m.%d} · 김 대리님의 업무")
+
+    # 김 대리 업무만 골라내기 (번호 i는 일정 목록에서의 위치 → 완료 저장에 사용)
+    tasks = [(i, it) for i, it in enumerate(st.session_state.schedule)
+             if it["kind"] == "김 대리 업무"]
+
+    if not tasks:
+        st.info("'📅 마감 캘린더' 메뉴에서 '🔍 회의록에서 일정 추출'을 먼저 눌러 주세요.")
+    else:
+        pending = [(i, it) for i, it in tasks if not it["done"]]
+        done = [(i, it) for i, it in tasks if it["done"]]
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("남은 업무", f"{len(pending)}건")
+        c2.metric("오늘 마감", f"{sum(today_group(it, today) == '🔥 오늘 마감' for _, it in pending)}건")
+        c3.metric("완료", f"{len(done)}건")
+
+        ver = st.session_state.sched_ver
+        for group in ["⚠️ 기한 경과", "🔥 오늘 마감", "📋 앞으로 할 일", "🗓️ 기한 확인 필요"]:
+            items = [(i, it) for i, it in pending if today_group(it, today) == group]
+            if not items:
+                continue
+            st.markdown(f"#### {group}")
+            items.sort(key=lambda pair: pair[1]["due"] if pair[1]["use"] else date.max)
+
+            for i, it in items:
+                key = f"today_{ver}_{i}"
+                with st.container(border=True):
+                    st.checkbox(it["name"], value=False, key=key,
+                                on_change=save_today_done, args=(i, key))
+                    if it["use"]:
+                        # deadline_label: 캘린더 셀의 'D-3 / 오늘 마감 / 2일 경과' 함수 재사용
+                        st.caption(f"📅 마감일: {it['due']:%Y.%m.%d} · {deadline_label(it['due'], today)}")
+                        if it["expr"]:
+                            st.caption(f"회의록 표현: {it['expr']}")
+                    elif it["expr"]:
+                        st.caption(f"🗓️ 기한: {it['expr']} · 정확한 날짜 확인 필요 (캘린더에서 지정)")
+                    else:
+                        st.caption("🗓️ 기한 미정 · 캘린더의 '일정 확인 및 수정'에서 날짜를 정할 수 있어요")
+
+        if not pending:
+            st.success("모든 담당 업무를 완료했어요! 🎉")
+
+        with st.expander(f"✅ 완료한 업무 {len(done)}건"):
+            for i, it in done:
+                key = f"today_done_{ver}_{i}"
+                st.checkbox(it["name"], value=True, key=key,
+                            on_change=save_today_done, args=(i, key))
+            st.caption("체크를 해제하면 미완료 목록으로 돌아가요.")
