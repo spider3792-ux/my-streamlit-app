@@ -31,10 +31,7 @@ sys_role = """
 - 결정 사항에는 예산, 일정, 채널처럼 구체적인 수치와 항목을 포함합니다.
 - 업무 세부 내용에는 회의에서 언급된 방향과 조건을 포함합니다.
 - 기한은 회의에서 해당 업무에 대해 명시적으로 언급된 경우에만 적습니다. 추측하지 않습니다.
-
-[이메일 규칙]
-- 이메일은 김 대리가 이메일로 보내 달라고 요청한 경우에만 보냅니다.
-- 받는 사람 주소는 [김 대리 이메일 주소]에 적힌 값만 사용합니다.
+- 이메일은 김 대리가 요청한 경우에만 보내고 이메일 본문은 마크다운 기호 없이 작성합니다.
 """
 
 # ── 이메일 발송 함수 (미션 1) ──
@@ -150,16 +147,26 @@ st.set_page_config(page_title="AI 개인비서 에이블", page_icon="🤖")
 st.title("🤖 AI 개인비서 에이블")
 st.caption("음성으로 질문하시면 답변해 드립니다.")
 
-# ── 화면: 회의록 업로드  ──
-meeting_text = ""   # 파일이 없어도 프롬프트에서 오류 나지 않게 빈 값으로 시작
+# ── 세션 상태 초기화 (S04: 처음 한 번만) ──
+if "messages" not in st.session_state:
+    st.session_state.messages = []        # 대화 히스토리
+if "meeting_text" not in st.session_state:
+    st.session_state.meeting_text = ""    # 업로드한 회의록 (탭 전환 시 유지)
 
+# ── 화면: 회의록 업로드  ──
 uploaded_file = st.file_uploader("회의록 파일 업로드 (txt)", type=["txt"])
 
-if uploaded_file is None:
+# 새 파일이 올라오면 세션 상태에 저장 → 다른 탭에 갔다 와도 유지됨
+if uploaded_file is not None:
+    st.session_state.meeting_text = uploaded_file.read().decode("utf-8")
+
+# 아래 코드는 모두 meeting_text 하나로 사용
+meeting_text = st.session_state.meeting_text
+
+if meeting_text == "":
     st.info("회의록 파일을 업로드하면 회의 내용을 바탕으로 답변합니다.")
 else:
-    meeting_text = uploaded_file.read().decode("utf-8")
-    st.success(f"'{uploaded_file.name}' 파일이 업로드되었습니다.")
+    st.success("회의록이 준비되었습니다.")
     st.text_area("회의록 내용", meeting_text, height=150)
 
 # ── 화면: 음성 녹음 + 실행 버튼 ──
@@ -225,7 +232,8 @@ if st.button("실행"):
                     final_response = client.responses.create(
                         model="gpt-4o-mini",
                         previous_response_id=response.id,
-                        input=tool_outputs
+                        input=tool_outputs,
+                        temperature=0
                     )
                     answer = final_response.output_text
 
@@ -243,9 +251,21 @@ if st.button("실행"):
             st.markdown("### AI 답변")
             st.markdown(answer)   # 마크다운(###, **)을 서식으로 변환해 표시
 
+            # 대화 히스토리 저장 (질문·답변 한 쌍씩, 최근 10개만 유지)
+            st.session_state.messages.append({"role": "user", "content": transcript.text})
+            st.session_state.messages.append({"role": "assistant", "content": answer})
+            st.session_state.messages = st.session_state.messages[-10:]
+
         except Exception as e:
             # API·네트워크 오류 시 앱이 멈추지 않고 안내만 표시 (종합실습6)
             st.error(f"오류가 발생했습니다: {e}")
+
+# ── 화면: 대화 기록 (종합실습6 st.chat_message) ──
+if st.session_state.messages:
+    with st.expander(f"💬 대화 기록 ({len(st.session_state.messages) // 2}건)"):
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
 
 # 추가 기능: 업무 우선순위 분석 (아이젠하워 매트릭스)
 
@@ -313,3 +333,229 @@ if st.button("우선순위 분석"):
 
         except Exception as e:
             st.error(f"오류가 발생했습니다: {e}")
+
+# ══════════════════════════════════════════════════════════════
+# 추가 기능 2: 마감 기한 역산 캘린더 (Action Scheduler)
+#  - 이 셀은 app.py 끝에 "이어 붙이기"(-a) 합니다.
+#  - 반드시 위의 app.py 셀(%%writefile app.py)을 먼저 실행한 뒤, 이 셀을 한 번만 실행하세요.
+# ══════════════════════════════════════════════════════════════
+from datetime import date, timedelta
+
+# ── ① 일정 추출용 출력 스키마 (05 실습 JSON 구조화) ──
+schedule_schema = {
+    "type": "json_schema",
+    "name": "schedule",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "김대리업무": {                      # 김 대리 업무 목록 (기한 없어도 포함)
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "일정명": {"type": "string"},
+                        "기한표현": {"type": ["string", "null"]},
+                        "기한일수": {"type": ["integer", "null"]}
+                    },
+                    "required": ["일정명", "기한표현", "기한일수"],
+                    "additionalProperties": False
+                }
+            },
+            "주요일정": {                        # 출시일 같은 전체 일정
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "일정명": {"type": "string"},
+                        "기한표현": {"type": ["string", "null"]},
+                        "기한일수": {"type": ["integer", "null"]}
+                    },
+                    "required": ["일정명", "기한표현", "기한일수"],
+                    "additionalProperties": False
+                }
+            }
+        },
+        "required": ["김대리업무", "주요일정"],
+        "additionalProperties": False
+    }
+}
+
+schedule_template = """
+다음 회의록에서 일정을 추출하세요.
+
+[김대리업무]
+- 김 대리에게 배정된 업무를 업무 하나당 한 항목씩 빠짐없이 모두 적으세요.
+- 기한이 없는 업무도 반드시 포함하세요. (기한표현, 기한일수는 null)
+- 일정명은 회의록의 구체적인 업무명으로 쓰세요.
+
+[주요일정]
+- 신제품 출시일처럼 회의에서 시점이 정해진 전체 일정만 적으세요.
+- 다음 회의, 진행 상황 점검처럼 회의 운영 일정은 제외하세요.
+- 김대리업무에 적은 업무는 다시 적지 마세요.
+
+[기한 규칙]
+- 기한표현: 회의록에 나온 시한 표현을 그대로 적고, 없으면 null로 하세요.
+- 기한일수: 회의 날로부터 며칠 뒤인지 정수로 적으세요.
+  '다음 주까지'는 7, '2주 안에'는 14처럼 회의 날 기준으로 정할 수 있을 때만 적습니다.
+  '다음 달 초'처럼 정하기 어렵거나, '출시 2주 전'처럼 다른 일정을 기준으로 한 시점이거나,
+  기한이 없으면 null로 하세요.
+
+회의록에 없는 내용은 지어내지 마세요.
+
+[회의록]
+{meeting}
+"""
+
+# ── ② 날짜 계산 (계산은 파이썬이 담당 → 결과가 항상 일관됨) ──
+def calc_due(base, expr, days):
+    """기준일 + 기한일수로 마감일 계산. '다음 달'이면 다음 달 1일. 못 정하면 None"""
+    if days is not None:
+        return base + timedelta(days=days)
+    if expr and "다음 달" in expr:
+        return (base.replace(day=1) + timedelta(days=32)).replace(day=1)
+    return None
+
+def make_milestones(name, due, base):
+    """마감일 기준 D-14, D-7, D-1, D-day 생성 (기준일보다 이전 날짜는 제외)"""
+    rows = []
+    for label, before in [("D-14", 14), ("D-7", 7), ("D-1", 1), ("D-day", 0)]:
+        day = due - timedelta(days=before)
+        if day >= base:
+            rows.append({"날짜": day, "단계": label, "일정명": name,
+                         "제목": f"[{label}] {name}"})
+    return rows
+
+# ── ③ 캘린더 파일(.ics) 만들기 → 어떤 캘린더에서도 열면 바로 등록 ──
+def make_ics(rows):
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Able//Action Scheduler//KO"]
+    for i, r in enumerate(rows):
+        lines += ["BEGIN:VEVENT",
+                  f"UID:able-{r['날짜']:%Y%m%d}-{i}@able",
+                  f"DTSTAMP:{date.today():%Y%m%d}T000000Z",
+                  f"DTSTART;VALUE=DATE:{r['날짜']:%Y%m%d}",
+                  f"DTEND;VALUE=DATE:{r['날짜'] + timedelta(days=1):%Y%m%d}",
+                  f"SUMMARY:{r['제목']}",
+                  "END:VEVENT"]
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(lines)
+
+# ── ④ Google 캘린더 연결 (서비스 계정 + 내 캘린더 공유) ──
+# 환경변수 GOOGLE_TOKEN: service_account.json 내용 / GOOGLE_CALENDAR_ID: 내 캘린더 ID
+#   - Colab: api_key.txt 셀에서 등록
+#   - Streamlit Cloud: Secrets에 등록
+def get_calendar_service():
+    from googleapiclient.discovery import build
+    info = json.loads(os.getenv("GOOGLE_TOKEN"))
+    if info.get("type") == "service_account":      # 서비스 계정 키를 쓴 경우
+        from google.oauth2.service_account import Credentials
+        creds = Credentials.from_service_account_info(
+            info, scopes=["https://www.googleapis.com/auth/calendar"])
+    else:                                           # OAuth로 받은 token.json
+        from google.oauth2.credentials import Credentials
+        creds = Credentials.from_authorized_user_info(info)
+    return build("calendar", "v3", credentials=creds)
+
+def add_to_google(rows):
+    service = get_calendar_service()
+    calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")   # 기본: 본인 캘린더
+    for r in rows:
+        event = {
+            "summary": r["제목"],
+            "description": "AI 개인비서 에이블이 회의록 기한을 역산해 등록한 일정입니다.",
+            "start": {"date": r["날짜"].isoformat()},
+            "end": {"date": (r["날짜"] + timedelta(days=1)).isoformat()},   # 종일 일정
+        }
+        service.events().insert(calendarId=calendar_id, body=event).execute()
+    return len(rows)
+
+# ── ⑤ 화면 ───────────────────────────────────────
+st.divider()
+st.subheader("📅 마감 기한 역산 캘린더")
+st.caption("회의록의 시한을 날짜로 계산해 D-14, D-7, D-1 마일스톤으로 등록합니다.")
+
+if "schedule" not in st.session_state:
+    st.session_state.schedule = []      # 추출한 일정 (버튼을 눌러도 유지)
+
+base_day = st.date_input("회의 날짜 (기한 계산 기준일)", value=date.today())
+
+if st.button("일정 추출"):
+    if meeting_text == "":
+        st.warning("먼저 회의록 파일을 업로드해 주세요.")
+    else:
+        try:
+            with st.spinner("회의록에서 일정을 찾고 있습니다.."):
+                response = client.responses.create(
+                    model="gpt-4o-mini",
+                    input=[{"role": "user",
+                            "content": schedule_template.format(meeting=meeting_text)}],
+                    text={"format": schedule_schema},
+                    temperature=0
+                )
+                data = json.loads(response.output_text)
+
+            # 이전에 수정했던 체크박스·날짜 값 지우기 (새 결과로 다시 채우기 위해)
+            for key in list(st.session_state.keys()):
+                if key.startswith(("use_", "due_")):
+                    del st.session_state[key]
+
+                        # 두 목록을 하나로 합치면서 구분 표시 (김 대리 업무가 먼저 나오게)
+            schedule = []
+            for item in data["김대리업무"]:
+                schedule.append({**item, "구분": "김 대리 업무"})
+            for item in data["주요일정"]:
+                schedule.append({**item, "구분": "주요 일정"})
+            st.session_state.schedule = schedule
+        except Exception as e:
+            st.error(f"오류가 발생했습니다: {e}")
+
+# 추출 결과가 있으면: 확인·수정 → 마일스톤 → 등록
+if st.session_state.schedule:
+    st.markdown("#### ✅ 일정 확인 및 수정")
+    st.caption("기한이 없거나 애매한 일정은 날짜를 직접 정한 뒤 체크하세요.")
+
+    all_rows = []
+    for i, item in enumerate(st.session_state.schedule):
+        # 구분 이름만 있는 빈 항목은 건너뛰기 (AI 출력 검증)
+        if item["일정명"] in ("김 대리 업무", "주요 일정"):
+            continue
+        # "null" 글자도 기한 없음으로 처리
+        expr = item["기한표현"] if item["기한표현"] not in (None, "", "null") else None
+
+        due = calc_due(base_day, expr, item["기한일수"])
+        expr = expr or "기한 미정"
+
+        c1, c2, c3 = st.columns([1, 3, 2])
+        use = c1.checkbox("등록", value=due is not None, key=f"use_{i}")
+        c2.markdown(f"**{item['일정명']}**  \n{item['구분']} · 회의 표현: {expr}")
+        due = c3.date_input("마감일", value=due or base_day + timedelta(days=7),
+                            key=f"due_{i}")
+
+        if use:
+            all_rows += make_milestones(item["일정명"], due, base_day)
+
+    if all_rows:
+        all_rows.sort(key=lambda r: r["날짜"])
+        st.markdown("#### 🗓️ 등록될 마일스톤")
+        st.dataframe(pd.DataFrame(all_rows)[["날짜", "단계", "일정명"]], hide_index=True)
+
+        col1, col2 = st.columns(2)
+
+        # 방법 1: Google 캘린더 자동 등록 (토큰이 있을 때만 버튼 활성화)
+        has_token = bool(os.getenv("GOOGLE_TOKEN"))
+        if col1.button("Google 캘린더에 등록", disabled=not has_token):
+            try:
+                with st.spinner("Google 캘린더에 등록하고 있습니다.."):
+                    count = add_to_google(all_rows)
+                st.success(f"📅 {count}개 일정을 Google 캘린더에 등록했습니다.")
+            except Exception as e:
+                st.error(f"캘린더 등록 실패: {e}")
+        if not has_token:
+            col1.caption("GOOGLE_TOKEN이 없어 비활성화됨")
+
+        # 방법 2: .ics 파일 다운로드 (어떤 캘린더든 열면 등록됨)
+        col2.download_button("📥 캘린더 파일(.ics) 다운로드",
+                             data=make_ics(all_rows),
+                             file_name="able_schedule.ics",
+                             mime="text/calendar")
+    else:
+        st.info("등록할 일정을 체크해 주세요.")
