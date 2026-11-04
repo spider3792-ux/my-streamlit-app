@@ -564,22 +564,3 @@ if st.session_state.schedule:
                              mime="text/calendar")
     else:
         st.info("등록할 일정을 체크해 주세요.")
-# ── [임시] 메일 연결 진단 (확인 후 삭제) ──
-with st.sidebar:
-    if st.button("📧 메일 연결 진단"):
-        sender = os.getenv("GMAIL_ADDRESS")
-        password = os.getenv("GMAIL_APP_PASSWORD")
-        st.write("주소 등록:", bool(sender), "/ 비밀번호 길이:", len(password or ""))
-        for port in (465, 587):
-            try:
-                if port == 465:
-                    s = smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15)
-                else:
-                    s = smtplib.SMTP("smtp.gmail.com", 587, timeout=15)
-                    s.starttls()
-                st.write(f"{port} 연결 성공")
-                s.login(sender, password)
-                st.success(f"{port} 로그인 성공")
-                s.quit()
-            except Exception as e:
-                st.error(f"{port} 실패: {type(e).__name__}: {e}")
