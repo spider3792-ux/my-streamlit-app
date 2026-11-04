@@ -190,7 +190,8 @@ if "meeting_text" not in st.session_state:
     st.session_state.meeting_text = ""    # 업로드한 회의록 (탭 전환 시 유지)
 
 # ★ [화면] 기능별 탭 (제목을 누르면 해당 기능만 보임)
-tab1, tab2, tab3 = st.tabs(["🎙️ AI 비서 (회의록·음성 질문)", "📊 업무 우선순위 분석", "📅 마감 캘린더"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🎙️ AI 비서 (회의록·음성 질문)", "📊 업무 우선순위 분석", "📅 마감 캘린더",
+                                        "📨 팔로업 메일", "🎧 출근길 브리핑"])
 
 # ════════════════ 탭 1: 회의록 업로드 · 음성 질문 · AI 답변 · 대화 기록 ════════════════
 with tab1:
@@ -632,3 +633,189 @@ with tab3:
                                  mime="text/calendar")
         else:
             st.info("등록할 일정을 체크해 주세요.")
+
+# ══════════════════════════════════════════════════════════════
+# 추가 기능 3: 팔로업 메일 초안 자동 생성 & 원클릭 승인 (탭 4)
+#  - ⚠️ app.py 셀 → 캘린더 셀 다음에, 이 셀을 한 번만 실행하세요.
+# ══════════════════════════════════════════════════════════════
+
+# ── ① 팔로업 요청 추출 스키마 (05 실습 JSON 구조화) ──
+followup_schema = {
+    "type": "json_schema",
+    "name": "followup",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "요청목록": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "담당자": {"type": "string"},      # 메일 받을 회의 참석자
+                        "요청자료": {"type": "string"},    # 요청할 자료·정보
+                        "관련업무": {"type": "string"},    # 김 대리의 어떤 업무에 필요한지
+                        "근거": {"type": "string"},        # 회의록 속 근거 발언
+                        "메일제목": {"type": "string"},
+                        "메일본문": {"type": "string"}
+                    },
+                    "required": ["담당자", "요청자료", "관련업무", "근거", "메일제목", "메일본문"],
+                    "additionalProperties": False
+                }
+            }
+        },
+        "required": ["요청목록"],
+        "additionalProperties": False
+    }
+}
+
+followup_template = """
+당신은 김 대리의 비서 에이블입니다. 회의록을 읽고, 김 대리가 배정된 업무를 시작하기 위해
+다른 참석자에게 받아야 할 선행 자료나 정보를 찾아 요청 메일 초안을 작성하세요.
+
+[찾는 기준]
+- 참석자가 김 대리에게 넘겨주기로 한 자료, 또는 회의에서 그 참석자가 언급해 가장 잘 알고 있는 정보
+- 김 대리 업무 수행에 실제로 필요한 것만, 최대 3건
+- 근거에는 회의록에서 그 참석자가 한 발언을 그대로 적으세요.
+- 회의록에 근거가 없는 요청은 만들지 마세요.
+
+[메일 작성 규칙]
+- 김 대리가 해당 참석자에게 보내는 메일입니다. 받는 사람 직함에 '님'을 붙여 정중하게 쓰세요.
+- 무엇이, 왜(어떤 업무에 필요한지), 언제까지 필요한지를 포함하세요. 기한이 회의록에 없으면 '가능한 일정'을 여쭙는 표현으로 쓰세요.
+- 마크다운 기호 없이 일반 텍스트로, 5~8문장 이내로 쓰세요.
+- 마지막은 '김 대리 드림'으로 끝내세요.
+
+[회의록]
+{meeting}
+"""
+
+# ── ② 화면: 탭 4 ──
+with tab4:
+    st.subheader("📨 팔로업 메일 초안")
+    st.caption("회의에서 동료에게 받아야 할 자료를 찾아 요청 메일 초안을 만들고, 승인하면 발송합니다.")
+
+    if "followups" not in st.session_state:
+        st.session_state.followups = []      # 생성한 초안 목록 (버튼을 눌러도 유지)
+
+    if st.button("초안 만들기", key="fu_make"):
+        if meeting_text == "":
+            st.warning("먼저 'AI 비서' 탭에서 회의록 파일을 업로드해 주세요.")
+        else:
+            try:
+                with st.spinner("필요한 자료를 찾고 메일 초안을 쓰고 있습니다.."):
+                    response = client.responses.create(
+                        model="gpt-4o-mini",
+                        input=[{"role": "user",
+                                "content": followup_template.format(meeting=meeting_text)}],
+                        text={"format": followup_schema},
+                        temperature=0
+                    )
+                    data = json.loads(response.output_text)
+
+                # 이전 초안의 입력칸·발송 기록 지우기 (새 초안으로 다시 채우기 위해)
+                for key in list(st.session_state.keys()):
+                    if key.startswith(("fu_to_", "fu_sub_", "fu_body_", "fu_sent_")):
+                        del st.session_state[key]
+
+                st.session_state.followups = data["요청목록"]
+                if not data["요청목록"]:
+                    st.info("회의록에서 요청할 선행 자료를 찾지 못했습니다.")
+            except Exception as e:
+                st.error(f"오류가 발생했습니다: {e}")
+
+    # 초안마다: 근거 확인 → 수정 → 승인 버튼
+    for i, d in enumerate(st.session_state.followups):
+        st.divider()
+        st.markdown(f"**📌 {d['담당자']}님께 '{d['요청자료']}' 요청 메일 초안을 작성했습니다. 발송할까요?**")
+        st.caption(f"관련 업무: {d['관련업무']}  \n회의 근거: \"{d['근거']}\"")
+
+        # 동료 실제 주소가 없으므로 기본값은 시연용으로 김 대리 주소 (직접 수정 가능)
+        to = st.text_input("받는 사람", value=MY_EMAIL, key=f"fu_to_{i}",
+                           help="시연용으로 김 대리 주소가 들어 있습니다. 실제 동료 주소로 바꿔 보내세요.")
+        subject = st.text_input("제목", value=d["메일제목"], key=f"fu_sub_{i}")
+        body = st.text_area("본문 (수정 가능)", value=d["메일본문"], height=200, key=f"fu_body_{i}")
+
+        if st.session_state.get(f"fu_sent_{i}"):
+            st.success(f"📧 {st.session_state[f'fu_sent_{i}']}(으)로 발송했습니다.")
+        elif st.button("✅ 승인하고 발송", key=f"fu_send_{i}"):
+            if "@" not in to:
+                st.warning("받는 사람 이메일 주소를 확인해 주세요.")
+            else:
+                with st.spinner("메일을 보내고 있습니다.."):
+                    result = send_email(to, subject, body)   # 미션 1 함수 재사용
+                if result["status"] == "success":
+                    st.session_state[f"fu_sent_{i}"] = to      # 중복 발송 방지
+                    st.rerun()
+                else:
+                    st.error(f"이메일 발송 실패: {result.get('error')}")
+
+# ══════════════════════════════════════════════════════════════
+# 추가 기능 4: 1분 출근길 오디오 브리핑 (탭 5)
+#  - ⚠️ 팔로업 메일 셀 다음에, 이 셀을 한 번만 실행하세요.
+# ══════════════════════════════════════════════════════════════
+
+briefing_role = """
+당신은 김 대리의 비서 에이블이며, 출근길에 이어폰으로 듣는 1분 라디오 브리핑을 진행합니다.
+
+[형식]
+- 뉴스 앵커처럼 또렷하고 경쾌한 말투로, 말하듯 자연스러운 문장으로 씁니다.
+- 마크다운 기호, 목록, 제목, 괄호를 쓰지 않습니다.
+- 전체 250~300자 이내로 씁니다. (읽으면 약 1분)
+
+[순서]
+1. 짧은 인사: "김 대리님, 출근길 브리핑입니다."
+2. 회의 결론 한두 문장: 무엇을 하기로 했는지
+3. 먼저 챙길 일: 김 대리 업무를 기한이 가까운 순서로, 업무 개수를 먼저 말하고 '첫째, 둘째'로
+4. 짧은 마무리 인사
+
+[주의]
+- 회의록에 없는 내용은 지어내지 않습니다.
+- 기한은 회의에서 명시된 표현 그대로 말하고, 없으면 '기한은 정해지지 않았습니다'라고 말합니다.
+"""
+
+# ── 화면: 탭 5 ──
+with tab5:
+    st.subheader("🎧 1분 출근길 브리핑")
+    st.caption("회의 결론과 먼저 챙길 일만 1분 안팎의 음성으로 들려 드립니다.")
+
+    if "briefing" not in st.session_state:
+        st.session_state.briefing = None      # {"script": 원고, "audio": 음성} 저장
+
+    voice = st.selectbox("목소리", ["nova", "alloy", "shimmer", "onyx"], key="br_voice")
+
+    if st.button("브리핑 만들기", key="br_make"):
+        if meeting_text == "":
+            st.warning("먼저 'AI 비서' 탭에서 회의록 파일을 업로드해 주세요.")
+        else:
+            try:
+                with st.spinner("브리핑 원고를 쓰고 있습니다.."):
+                    response = client.responses.create(
+                        model="gpt-4o-mini",
+                        input=[{"role": "system", "content": briefing_role},
+                               {"role": "user", "content": f"[회의록]\n{meeting_text}"}],
+                        temperature=0
+                    )
+                    script = response.output_text
+
+                with st.spinner("음성으로 변환하고 있습니다.."):
+                    speech = client.audio.speech.create(
+                        model="gpt-4o-mini-tts",
+                        voice=voice,
+                        input=script,
+                        instructions="라디오 뉴스 앵커처럼 또렷하고 경쾌하게, 조금 빠른 속도로 읽어 주세요."
+                    )
+
+                st.session_state.briefing = {"script": script, "audio": speech.content}
+            except Exception as e:
+                st.error(f"오류가 발생했습니다: {e}")
+
+    # 만든 브리핑이 있으면 재생 + 다운로드 + 원고
+    if st.session_state.briefing:
+        b = st.session_state.briefing
+        st.audio(b["audio"], format="audio/mp3")
+        sec = round(len(b["script"]) / 5.5)   # 한국어 약 5~6자/초 기준 예상 길이
+        st.caption(f"원고 {len(b['script'])}자 · 예상 재생 시간 약 {sec}초")
+
+        st.download_button("📥 MP3로 저장 (이어폰으로 듣기)", data=b["audio"],
+                           file_name="able_briefing.mp3", mime="audio/mpeg")
+        with st.expander("📄 브리핑 원고 보기"):
+            st.write(b["script"])
