@@ -13,6 +13,9 @@ client = OpenAI()
 # 이메일 요청 시 받을 주소 (음성 인식 오류를 피하려고 코드에 고정)
 MY_EMAIL = "spider379@naver.com"
 
+# ★ [화면] 에이블 대표 이미지 경로 (app.py와 같은 폴더에 둔 파일 이름)
+IMAGE_PATH = "able.png"
+
 # ★ [추가 기능 2] 대화 기록 최대 개수 (질문 1 + 답변 1 = 2개 → 10이면 최근 5번의 대화)
 MAX_HISTORY = 10
 
@@ -163,48 +166,70 @@ st.set_page_config(page_title="AI 개인비서 에이블", page_icon="🤖")
 st.title("🤖 AI 개인비서 에이블")
 st.caption("음성으로 질문하시면 답변해 드립니다.")
 
+# ★ [화면] 소개 영역: 왼쪽 이미지 / 오른쪽 역할·핵심 기능
+left, right = st.columns([1, 2])
+with left:
+    if os.path.exists(IMAGE_PATH):
+        st.image(IMAGE_PATH, width="stretch")   # 칸 너비에 맞춤
+    else:
+        st.info("🖼️ 이미지 준비 중\n\n(IMAGE_PATH 경로에 파일을 넣으세요)")
+with right:
+    st.markdown("""
+#### 김 대리의 AI 개인비서, 에이블
+- 📝 회의록을 분석해 **요약하고 내 업무를 찾아** 드립니다.
+- 🎙️ **음성으로 질문**하면 글과 음성으로 답하고, 요청 시 **이메일**로 보냅니다.
+- 📅 업무 **우선순위**를 정리하고 마감일을 **캘린더**에 등록합니다.
+""")
+
+st.divider()
+
 # ── 세션 상태 초기화 (S04: 처음 한 번만) ──
 if "messages" not in st.session_state:
     st.session_state.messages = []        # 대화 히스토리
 if "meeting_text" not in st.session_state:
     st.session_state.meeting_text = ""    # 업로드한 회의록 (탭 전환 시 유지)
 
-# ── 화면: 회의록 업로드  ──
-uploaded_file = st.file_uploader("회의록 파일 업로드 (txt)", type=["txt"])
+# ★ [화면] 기능별 탭 (제목을 누르면 해당 기능만 보임)
+tab1, tab2, tab3 = st.tabs(["🎙️ AI 비서 (회의록·음성 질문)", "📊 업무 우선순위 분석", "📅 마감 캘린더"])
 
-# 새 파일이 올라오면 세션 상태에 저장 → 다른 탭에 갔다 와도 유지됨
-if uploaded_file is not None:
-    st.session_state.meeting_text = uploaded_file.read().decode("utf-8")
+# ════════════════ 탭 1: 회의록 업로드 · 음성 질문 · AI 답변 · 대화 기록 ════════════════
+with tab1:
+    # ── 화면: 회의록 업로드  ──
+    uploaded_file = st.file_uploader("회의록 파일 업로드 (txt)", type=["txt"])
 
-# 아래 코드는 모두 meeting_text 하나로 사용
-meeting_text = st.session_state.meeting_text
+    # 새 파일이 올라오면 세션 상태에 저장 → 다른 탭에 갔다 와도 유지됨
+    if uploaded_file is not None:
+        st.session_state.meeting_text = uploaded_file.read().decode("utf-8")
 
-if meeting_text == "":
-    st.info("회의록 파일을 업로드하면 회의 내용을 바탕으로 답변합니다.")
-else:
-    st.success("회의록이 준비되었습니다.")
-    st.text_area("회의록 내용", meeting_text, height=150)
+    # 아래 코드는 모두 meeting_text 하나로 사용
+    meeting_text = st.session_state.meeting_text
 
-# ── 화면: 음성 녹음 + 실행 버튼 ──
-audio_value = st.audio_input("무엇을 도와드릴까요?")
-voice_on = st.toggle("🔊 답변을 음성으로 듣기", value=True)   # ★ [추가 기능 3] 음성 켜기/끄기
-
-if st.button("실행"):
-    if audio_value is None:
-        st.warning("먼저 마이크 버튼을 눌러 질문을 녹음해 주세요.")
+    if meeting_text == "":
+        st.info("회의록 파일을 업로드하면 회의 내용을 바탕으로 답변합니다.")
     else:
-        try:
-            # 시간이 걸리는 작업 동안 스피너 표시
-            with st.spinner("답변을 준비하고 있습니다.."):
+        st.success("회의록이 준비되었습니다.")
+        st.text_area("회의록 내용", meeting_text, height=150)
 
-                # STT: 녹음은 파일이 아니라 메모리 데이터 → (파일명, 바이트)로 전달
-                transcript = client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=("recording.wav", audio_value.getvalue())
-                )
+    # ── 화면: 음성 녹음 + 실행 버튼 ──
+    audio_value = st.audio_input("무엇을 도와드릴까요?")
+    voice_on = st.toggle("🔊 답변을 음성으로 듣기", value=True)   # ★ [추가 기능 3] 음성 켜기/끄기
 
-                # 프롬프트: 음성 요청 + 고정 이메일 주소 + 회의록
-                prompt = f"""
+    if st.button("실행"):
+        if audio_value is None:
+            st.warning("먼저 마이크 버튼을 눌러 질문을 녹음해 주세요.")
+        else:
+            try:
+                # 시간이 걸리는 작업 동안 스피너 표시
+                with st.spinner("답변을 준비하고 있습니다.."):
+
+                    # STT: 녹음은 파일이 아니라 메모리 데이터 → (파일명, 바이트)로 전달
+                    transcript = client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=("recording.wav", audio_value.getvalue())
+                    )
+
+                    # 프롬프트: 음성 요청 + 고정 이메일 주소 + 회의록
+                    prompt = f"""
 {transcript.text}
 
 [김 대리 이메일 주소]
@@ -214,167 +239,166 @@ if st.button("실행"):
 {meeting_text}
 """
 
-                # 음성 요청에 '메일'이 들어 있으면 이메일 도구를 반드시 사용
-                # ('이 메일', '이메일' 모두 잡히도록 '메일'로 검사)
-                wants_email = "메일" in transcript.text
-                if wants_email:
-                    choice = {"type": "function", "name": "send_email"}
-                else:
-                    choice = "auto"
+                    # 음성 요청에 '메일'이 들어 있으면 이메일 도구를 반드시 사용
+                    # ('이 메일', '이메일' 모두 잡히도록 '메일'로 검사)
+                    wants_email = "메일" in transcript.text
+                    if wants_email:
+                        choice = {"type": "function", "name": "send_email"}
+                    else:
+                        choice = "auto"
 
-                # 1단계: 질문 + 도구 정의 전달
-                # parallel False: 메일 한 통만
-                response = client.responses.create(
-                    model="gpt-4o-mini",
-                    # ★ [추가 기능 1] 멀티턴: 역할 → 이전 대화 → 이번 질문 순서로 전달
-                    input=[{"role": "system", "content": sys_role}]
-                          + st.session_state.messages
-                          + [{"role": "user", "content": prompt}],
-                    tools=tools,
-                    tool_choice=choice,
-                    parallel_tool_calls=False,
-                    temperature=0
-                )
-
-                # 도구 호출 요청이 있는지 확인
-                tool_calls = [item for item in response.output
-                              if item.type == "function_call"]
-
-                if not tool_calls:
-                    answer = response.output_text
-                else:
-                    # 2단계: LLM이 정한 인자(to, subject, body)로 함수 실행
-                    tool_outputs = []
-                    for item in tool_calls:
-                        if item.name == "send_email":
-                            args = json.loads(item.arguments)
-                            result = send_email(**args)
-                            tool_outputs.append({
-                                "type": "function_call_output",
-                                "call_id": item.call_id,
-                                "output": json.dumps(result, ensure_ascii=False)
-                            })
-
-                    # 3단계: 실행 결과를 LLM에 돌려주고 최종 답변 받기
-                    final_response = client.responses.create(
+                    # 1단계: 질문 + 도구 정의 전달
+                    # parallel False: 메일 한 통만
+                    response = client.responses.create(
                         model="gpt-4o-mini",
-                        previous_response_id=response.id,
-                        input=tool_outputs,
+                        # ★ [추가 기능 1] 멀티턴: 역할 → 이전 대화 → 이번 질문 순서로 전달
+                        input=[{"role": "system", "content": sys_role}]
+                              + st.session_state.messages
+                              + [{"role": "user", "content": prompt}],
+                        tools=tools,
+                        tool_choice=choice,
+                        parallel_tool_calls=False,
                         temperature=0
                     )
-                    answer = final_response.output_text
 
-            # ── 결과 화면 ──────────────────────────
-            st.markdown("#### 🎙️ 인식된 질문")
-            st.info(transcript.text)   # 음성 인식이 정확한지 확인용
+                    # 도구 호출 요청이 있는지 확인
+                    tool_calls = [item for item in response.output
+                                  if item.type == "function_call"]
 
-            if tool_calls:   # 메일을 보냈을 때만 발송 결과 표시
-                if result["status"] == "success":
-                    st.success(f"📧 {args['to']}(으)로 이메일을 보냈습니다.")
-                else:
-                    st.error(f"이메일 발송 실패: {result.get('error')}")
+                    if not tool_calls:
+                        answer = response.output_text
+                    else:
+                        # 2단계: LLM이 정한 인자(to, subject, body)로 함수 실행
+                        tool_outputs = []
+                        for item in tool_calls:
+                            if item.name == "send_email":
+                                args = json.loads(item.arguments)
+                                result = send_email(**args)
+                                tool_outputs.append({
+                                    "type": "function_call_output",
+                                    "call_id": item.call_id,
+                                    "output": json.dumps(result, ensure_ascii=False)
+                                })
 
-            st.divider()
-            st.markdown("### AI 답변")
-            st.markdown(answer)   # 마크다운(###, **)을 서식으로 변환해 표시
+                        # 3단계: 실행 결과를 LLM에 돌려주고 최종 답변 받기
+                        final_response = client.responses.create(
+                            model="gpt-4o-mini",
+                            previous_response_id=response.id,
+                            input=tool_outputs,
+                            temperature=0
+                        )
+                        answer = final_response.output_text
 
-            # ★ [추가 기능 3] LLM 최종 응답을 음성으로 즉시 재생 (미션 5·6 TTS)
-            if voice_on:
-                with st.spinner("음성을 준비하고 있습니다.."):
-                    speech = client.audio.speech.create(
-                        model="gpt-4o-mini-tts",
-                        voice="nova",
-                        input=to_speech_text(answer),
-                        instructions="비서가 담당자에게 얘기하는 정중한 말투로 빠뜨리지 말고 또박또박 읽어주세요."
+                # ── 결과 화면 ──────────────────────────
+                st.markdown("#### 🎙️ 인식된 질문")
+                st.info(transcript.text)   # 음성 인식이 정확한지 확인용
+
+                if tool_calls:   # 메일을 보냈을 때만 발송 결과 표시
+                    if result["status"] == "success":
+                        st.success(f"📧 {args['to']}(으)로 이메일을 보냈습니다.")
+                    else:
+                        st.error(f"이메일 발송 실패: {result.get('error')}")
+
+                st.divider()
+                st.markdown("### AI 답변")
+                st.markdown(answer)   # 마크다운(###, **)을 서식으로 변환해 표시
+
+                # ★ [추가 기능 3] LLM 최종 응답을 음성으로 즉시 재생 (미션 5·6 TTS)
+                if voice_on:
+                    with st.spinner("음성을 준비하고 있습니다.."):
+                        speech = client.audio.speech.create(
+                            model="gpt-4o-mini-tts",
+                            voice="nova",
+                            input=to_speech_text(answer),
+                            instructions="비서가 담당자에게 얘기하는 정중한 말투로 빠뜨리지 말고 또박또박 읽어주세요."
+                        )
+                    st.audio(speech.content, format="audio/mp3", autoplay=True)
+
+                # 대화 히스토리 저장 (질문·답변 한 쌍씩, 최근 10개만 유지)
+                st.session_state.messages.append({"role": "user", "content": transcript.text})
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+                st.session_state.messages = st.session_state.messages[-MAX_HISTORY:]   # ★ 숫자를 변수로
+
+            except Exception as e:
+                # API·네트워크 오류 시 앱이 멈추지 않고 안내만 표시 (종합실습6)
+                st.error(f"오류가 발생했습니다: {e}")
+
+    # ── 화면: 대화 기록 (종합실습6 st.chat_message) ──
+    if st.session_state.messages:
+        with st.expander(f"💬 대화 기록 ({len(st.session_state.messages) // 2}건)"):
+            for message in st.session_state.messages:
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
+        # ★ [추가 기능 2] 대화 기록 지우기 (새 회의록으로 바꿀 때 이전 대화가 섞이지 않게)
+        if st.button("🗑️ 대화 기록 지우기"):
+            st.session_state.messages = []
+            st.rerun()   # 화면을 바로 다시 그려 기록을 지움
+
+# ════════════════ 탭 2: 업무 우선순위 분석 ════════════════
+with tab2:
+    st.subheader("📊 업무 우선순위 분석")
+    st.caption("업로드한 회의록에서 김 대리 업무를 긴급도 × 중요도로 분류합니다.")
+
+    if st.button("우선순위 분석"):
+        if meeting_text == "":
+            st.warning("먼저 회의록 파일을 업로드해 주세요.")
+        else:
+            try:
+                with st.spinner("업무를 분석하고 있습니다.."):
+                    response = client.responses.create(
+                        model="gpt-4o-mini",
+                        input=[{"role": "user",
+                                "content": priority_template.format(meeting=meeting_text)}],
+                        text={"format": priority_schema},   # 정해진 JSON 형식으로만 답변
+                        temperature=0
                     )
-                st.audio(speech.content, format="audio/mp3", autoplay=True)
+                    data = json.loads(response.output_text)   # JSON 문자열 → 딕셔너리
 
-            # 대화 히스토리 저장 (질문·답변 한 쌍씩, 최근 10개만 유지)
-            st.session_state.messages.append({"role": "user", "content": transcript.text})
-            st.session_state.messages.append({"role": "assistant", "content": answer})
-            st.session_state.messages = st.session_state.messages[-MAX_HISTORY:]   # ★ 숫자를 변수로
+                # ── ① 업무 집중도 (R&R 밸런스) ──────────
+                df_people = pd.DataFrame(data["참석자별업무"])
+                kim = df_people[df_people["이름"].str.contains("김")]["업무수"].sum()
+                total = df_people["업무수"].sum()
 
-        except Exception as e:
-            # API·네트워크 오류 시 앱이 멈추지 않고 안내만 표시 (종합실습6)
-            st.error(f"오류가 발생했습니다: {e}")
+                st.markdown("#### ⚖️ 업무 집중도")
+                col1, col2 = st.columns(2)
+                col1.metric("김 대리 배정 업무", f"{kim}건")
+                col2.metric("전체 배정 업무 중 비중",
+                            f"{kim / total * 100:.0f}%" if total else "-")
 
-# ── 화면: 대화 기록 (종합실습6 st.chat_message) ──
-if st.session_state.messages:
-    with st.expander(f"💬 대화 기록 ({len(st.session_state.messages) // 2}건)"):
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-    # ★ [추가 기능 2] 대화 기록 지우기 (새 회의록으로 바꿀 때 이전 대화가 섞이지 않게)
-    if st.button("🗑️ 대화 기록 지우기"):
-        st.session_state.messages = []
-        st.rerun()   # 화면을 바로 다시 그려 기록을 지움
+                # 김 대리 업무가 3건 이상이거나 절반 이상이면 경보
+                if kim >= 3 or (total and kim / total >= 0.5):
+                    st.error("🚨 김 대리에게 업무가 집중되어 있습니다. 우선순위와 위임을 검토하세요.")
+                else:
+                    st.success("업무 배분이 적정한 수준입니다.")
 
-# 추가 기능: 업무 우선순위 분석 (아이젠하워 매트릭스)
+                st.bar_chart(df_people.set_index("이름")["업무수"])
 
-st.divider()
-st.subheader("📊 업무 우선순위 분석")
-st.caption("업로드한 회의록에서 김 대리 업무를 긴급도 × 중요도로 분류합니다.")
+                # ── ② 우선순위 매트릭스 ──────────────────
+                df_task = pd.DataFrame(data["업무목록"])
+                df_task["기한"] = df_task["기한"].fillna("기한 미정").replace("null", "기한 미정")
+                df_task["분류"] = df_task.apply(
+                    lambda r: classify(r["긴급도"], r["중요도"]), axis=1)
 
-if st.button("우선순위 분석"):
-    if meeting_text == "":
-        st.warning("먼저 회의록 파일을 업로드해 주세요.")
-    else:
-        try:
-            with st.spinner("업무를 분석하고 있습니다.."):
-                response = client.responses.create(
-                    model="gpt-4o-mini",
-                    input=[{"role": "user",
-                            "content": priority_template.format(meeting=meeting_text)}],
-                    text={"format": priority_schema},   # 정해진 JSON 형식으로만 답변
-                    temperature=0
-                )
-                data = json.loads(response.output_text)   # JSON 문자열 → 딕셔너리
+                st.markdown("#### 🗂️ 우선순위 가이드")
+                cols = st.columns(3)
+                for col, group, icon in zip(cols,
+                                            ["즉시 착수", "순차 진행", "위임 검토"],
+                                            ["🔴", "🟡", "🔵"]):
+                    col.markdown(f"**{icon} {group}**")
+                    tasks = df_task[df_task["분류"] == group]
+                    if tasks.empty:
+                        col.caption("해당 업무 없음")
+                    for _, t in tasks.iterrows():
+                        col.info(f"**{t['업무명']}**\n\n⏰ {t['기한']}")
 
-            # ── ① 업무 집중도 (R&R 밸런스) ──────────
-            df_people = pd.DataFrame(data["참석자별업무"])
-            kim = df_people[df_people["이름"].str.contains("김")]["업무수"].sum()
-            total = df_people["업무수"].sum()
+                # ── ③ 판단 근거 표 ───────────────────────
+                st.markdown("#### 📋 판단 근거")
+                st.dataframe(df_task[["분류", "업무명", "기한", "긴급도", "중요도", "근거"]],
+                             hide_index=True)
+                st.caption("※ 중요도는 회의 내용을 바탕으로 한 에이블의 판단입니다.")
 
-            st.markdown("#### ⚖️ 업무 집중도")
-            col1, col2 = st.columns(2)
-            col1.metric("김 대리 배정 업무", f"{kim}건")
-            col2.metric("전체 배정 업무 중 비중",
-                        f"{kim / total * 100:.0f}%" if total else "-")
-
-            # 김 대리 업무가 3건 이상이거나 절반 이상이면 경보
-            if kim >= 3 or (total and kim / total >= 0.5):
-                st.error("🚨 김 대리에게 업무가 집중되어 있습니다. 우선순위와 위임을 검토하세요.")
-            else:
-                st.success("업무 배분이 적정한 수준입니다.")
-
-            st.bar_chart(df_people.set_index("이름")["업무수"])
-
-            # ── ② 우선순위 매트릭스 ──────────────────
-            df_task = pd.DataFrame(data["업무목록"])
-            df_task["기한"] = df_task["기한"].fillna("기한 미정").replace("null", "기한 미정")
-            df_task["분류"] = df_task.apply(
-                lambda r: classify(r["긴급도"], r["중요도"]), axis=1)
-
-            st.markdown("#### 🗂️ 우선순위 가이드")
-            cols = st.columns(3)
-            for col, group, icon in zip(cols,
-                                        ["즉시 착수", "순차 진행", "위임 검토"],
-                                        ["🔴", "🟡", "🔵"]):
-                col.markdown(f"**{icon} {group}**")
-                tasks = df_task[df_task["분류"] == group]
-                if tasks.empty:
-                    col.caption("해당 업무 없음")
-                for _, t in tasks.iterrows():
-                    col.info(f"**{t['업무명']}**\n\n⏰ {t['기한']}")
-
-            # ── ③ 판단 근거 표 ───────────────────────
-            st.markdown("#### 📋 판단 근거")
-            st.dataframe(df_task[["분류", "업무명", "기한", "긴급도", "중요도", "근거"]],
-                         hide_index=True)
-            st.caption("※ 중요도는 회의 내용을 바탕으로 한 에이블의 판단입니다.")
-
-        except Exception as e:
-            st.error(f"오류가 발생했습니다: {e}")
+            except Exception as e:
+                st.error(f"오류가 발생했습니다: {e}")
 
 # ══════════════════════════════════════════════════════════════
 # 추가 기능 2: 마감 기한 역산 캘린더 (Action Scheduler)
@@ -512,98 +536,99 @@ def add_to_google(rows):
         service.events().insert(calendarId=calendar_id, body=event).execute()
     return len(rows)
 
-# ── ⑤ 화면 ───────────────────────────────────────
-st.divider()
-st.subheader("📅 마감 기한 역산 캘린더")
-st.caption("회의록의 시한을 날짜로 계산해 D-14, D-7, D-1 마일스톤으로 등록합니다.")
-
-if "schedule" not in st.session_state:
-    st.session_state.schedule = []      # 추출한 일정 (버튼을 눌러도 유지)
-
-base_day = st.date_input("회의 날짜 (기한 계산 기준일)", value=date.today())
-
-if st.button("일정 추출"):
-    if meeting_text == "":
-        st.warning("먼저 회의록 파일을 업로드해 주세요.")
-    else:
-        try:
-            with st.spinner("회의록에서 일정을 찾고 있습니다.."):
-                response = client.responses.create(
-                    model="gpt-4o-mini",
-                    input=[{"role": "user",
-                            "content": schedule_template.format(meeting=meeting_text)}],
-                    text={"format": schedule_schema},
-                    temperature=0
-                )
-                data = json.loads(response.output_text)
-
-            # 이전에 수정했던 체크박스·날짜 값 지우기 (새 결과로 다시 채우기 위해)
-            for key in list(st.session_state.keys()):
-                if key.startswith(("use_", "due_")):
-                    del st.session_state[key]
-
-            # 두 목록을 하나로 합치면서 구분 표시 (김 대리 업무가 먼저 나오게)
-            schedule = []
-            for item in data["김대리업무"]:
-                schedule.append({**item, "구분": "김 대리 업무"})
-            for item in data["주요일정"]:
-                schedule.append({**item, "구분": "주요 일정"})
-            st.session_state.schedule = schedule
-        except Exception as e:
-            st.error(f"오류가 발생했습니다: {e}")
-
-# 추출 결과가 있으면: 확인·수정 → 마일스톤 → 등록
-if st.session_state.schedule:
-    st.markdown("#### ✅ 일정 확인 및 수정")
-    st.caption("기한이 없거나 애매한 일정은 날짜를 직접 정한 뒤 체크하세요.")
-
-    all_rows = []
-    for i, item in enumerate(st.session_state.schedule):
-        # 구분 이름만 있는 빈 항목은 건너뛰기 (AI 출력 검증)
-        if item["일정명"] in ("김 대리 업무", "주요 일정"):
-            continue
-        # "null" 글자도 기한 없음으로 처리
-        expr = item["기한표현"] if item["기한표현"] not in (None, "", "null") else None
-
-        days = item["기한일수"]
-        # '출시 2주 전'처럼 다른 일정 기준 시점은 AI가 계산한 일수를 쓰지 않음
-        if expr and re.search(r"\d+\s*(주|일)\s*전", expr):
-            days = None
-        due = calc_due(base_day, expr, days)
-        expr = expr or "기한 미정"
-
-        c1, c2, c3 = st.columns([1, 3, 2])
-        use = c1.checkbox("등록", value=due is not None, key=f"use_{i}")
-        c2.markdown(f"**{item['일정명']}**  \n{item['구분']} · 회의 표현: {expr}")
-        due = c3.date_input("마감일", value=due or base_day + timedelta(days=7),
-                            key=f"due_{i}")
-
-        if use:
-            all_rows += make_milestones(item["일정명"], due, base_day)
-
-    if all_rows:
-        all_rows.sort(key=lambda r: r["날짜"])
-        st.markdown("#### 🗓️ 등록될 마일스톤")
-        st.dataframe(pd.DataFrame(all_rows)[["날짜", "단계", "일정명"]], hide_index=True)
-
-        col1, col2 = st.columns(2)
-
-        # 방법 1: Google 캘린더 자동 등록 (토큰이 있을 때만 버튼 활성화)
-        has_token = bool(os.getenv("GOOGLE_TOKEN"))
-        if col1.button("Google 캘린더에 등록", disabled=not has_token):
+# ── ⑤ 화면: 탭 3 안에 표시 (탭은 app.py 셀에서 만듦) ──
+with tab3:
+    # ── ⑤ 화면 ───────────────────────────────────────
+    st.subheader("📅 마감 기한 역산 캘린더")
+    st.caption("회의록의 시한을 날짜로 계산해 D-14, D-7, D-1 마일스톤으로 등록합니다.")
+    
+    if "schedule" not in st.session_state:
+        st.session_state.schedule = []      # 추출한 일정 (버튼을 눌러도 유지)
+    
+    base_day = st.date_input("회의 날짜 (기한 계산 기준일)", value=date.today())
+    
+    if st.button("일정 추출"):
+        if meeting_text == "":
+            st.warning("먼저 회의록 파일을 업로드해 주세요.")
+        else:
             try:
-                with st.spinner("Google 캘린더에 등록하고 있습니다.."):
-                    count = add_to_google(all_rows)
-                st.success(f"📅 {count}개 일정을 Google 캘린더에 등록했습니다.")
+                with st.spinner("회의록에서 일정을 찾고 있습니다.."):
+                    response = client.responses.create(
+                        model="gpt-4o-mini",
+                        input=[{"role": "user",
+                                "content": schedule_template.format(meeting=meeting_text)}],
+                        text={"format": schedule_schema},
+                        temperature=0
+                    )
+                    data = json.loads(response.output_text)
+    
+                # 이전에 수정했던 체크박스·날짜 값 지우기 (새 결과로 다시 채우기 위해)
+                for key in list(st.session_state.keys()):
+                    if key.startswith(("use_", "due_")):
+                        del st.session_state[key]
+    
+                # 두 목록을 하나로 합치면서 구분 표시 (김 대리 업무가 먼저 나오게)
+                schedule = []
+                for item in data["김대리업무"]:
+                    schedule.append({**item, "구분": "김 대리 업무"})
+                for item in data["주요일정"]:
+                    schedule.append({**item, "구분": "주요 일정"})
+                st.session_state.schedule = schedule
             except Exception as e:
-                st.error(f"캘린더 등록 실패: {e}")
-        if not has_token:
-            col1.caption("GOOGLE_TOKEN이 없어 비활성화됨")
-
-        # 방법 2: .ics 파일 다운로드 (어떤 캘린더든 열면 등록됨)
-        col2.download_button("📥 캘린더 파일(.ics) 다운로드",
-                             data=make_ics(all_rows),
-                             file_name="able_schedule.ics",
-                             mime="text/calendar")
-    else:
-        st.info("등록할 일정을 체크해 주세요.")
+                st.error(f"오류가 발생했습니다: {e}")
+    
+    # 추출 결과가 있으면: 확인·수정 → 마일스톤 → 등록
+    if st.session_state.schedule:
+        st.markdown("#### ✅ 일정 확인 및 수정")
+        st.caption("기한이 없거나 애매한 일정은 날짜를 직접 정한 뒤 체크하세요.")
+    
+        all_rows = []
+        for i, item in enumerate(st.session_state.schedule):
+            # 구분 이름만 있는 빈 항목은 건너뛰기 (AI 출력 검증)
+            if item["일정명"] in ("김 대리 업무", "주요 일정"):
+                continue
+            # "null" 글자도 기한 없음으로 처리
+            expr = item["기한표현"] if item["기한표현"] not in (None, "", "null") else None
+    
+            days = item["기한일수"]
+            # '출시 2주 전'처럼 다른 일정 기준 시점은 AI가 계산한 일수를 쓰지 않음
+            if expr and re.search(r"\d+\s*(주|일)\s*전", expr):
+                days = None
+            due = calc_due(base_day, expr, days)
+            expr = expr or "기한 미정"
+    
+            c1, c2, c3 = st.columns([1, 3, 2])
+            use = c1.checkbox("등록", value=due is not None, key=f"use_{i}")
+            c2.markdown(f"**{item['일정명']}**  \n{item['구분']} · 회의 표현: {expr}")
+            due = c3.date_input("마감일", value=due or base_day + timedelta(days=7),
+                                key=f"due_{i}")
+    
+            if use:
+                all_rows += make_milestones(item["일정명"], due, base_day)
+    
+        if all_rows:
+            all_rows.sort(key=lambda r: r["날짜"])
+            st.markdown("#### 🗓️ 등록될 마일스톤")
+            st.dataframe(pd.DataFrame(all_rows)[["날짜", "단계", "일정명"]], hide_index=True)
+    
+            col1, col2 = st.columns(2)
+    
+            # 방법 1: Google 캘린더 자동 등록 (토큰이 있을 때만 버튼 활성화)
+            has_token = bool(os.getenv("GOOGLE_TOKEN"))
+            if col1.button("Google 캘린더에 등록", disabled=not has_token):
+                try:
+                    with st.spinner("Google 캘린더에 등록하고 있습니다.."):
+                        count = add_to_google(all_rows)
+                    st.success(f"📅 {count}개 일정을 Google 캘린더에 등록했습니다.")
+                except Exception as e:
+                    st.error(f"캘린더 등록 실패: {e}")
+            if not has_token:
+                col1.caption("GOOGLE_TOKEN이 없어 비활성화됨")
+    
+            # 방법 2: .ics 파일 다운로드 (어떤 캘린더든 열면 등록됨)
+            col2.download_button("📥 캘린더 파일(.ics) 다운로드",
+                                 data=make_ics(all_rows),
+                                 file_name="able_schedule.ics",
+                                 mime="text/calendar")
+        else:
+            st.info("등록할 일정을 체크해 주세요.")
