@@ -100,6 +100,27 @@ PAGE_INFO = {
 # 대화 기록 최대 개수 (질문 1 + 답변 1 = 2개 → 20이면 최근 10번의 대화)
 MAX_HISTORY = 20
 
+# 메뉴 바로가기: 질문에 이 단어가 들어 있으면 해당 메뉴로 가는 버튼을 보여 줌
+#  - 음성 인식은 띄어쓰기가 달라질 수 있어서 띄어쓰기를 없앤 단어로 비교
+PAGE_KEYWORDS = {
+    "📊 업무 우선순위 분석": ["우선순위"],
+    "📅 마감 캘린더":       ["마감캘린더", "캘린더", "달력"],
+    "📨 팔로업 메일":       ["팔로업", "팔로우업"],
+    "🎧 출근길 브리핑":     ["출근길", "브리핑"],
+    "🍃 오늘의 할 일":      ["오늘의할일", "할일", "칸반"],
+    "🗂️ 회의 자료실":       ["회의자료실", "자료실"],
+}
+
+def find_pages(text):
+    """질문에서 메뉴 이름(키워드)을 찾아, 찾은 메뉴 목록을 메뉴 순서대로 반환"""
+    q = text.replace(" ", "")
+    return [p for p in PAGES if any(word in q for word in PAGE_KEYWORDS.get(p, []))]
+
+def go_page(target):
+    """바로가기 버튼: 사이드바 메뉴 값을 바꿔서 그 메뉴로 이동"""
+    st.session_state.menu = target
+    st.session_state.jump_pages = []      # 이동했으면 버튼은 지움
+
 # 주석 추가 ~~~
 def kst_today():
     return datetime.now(ZoneInfo("Asia/Seoul")).date()
@@ -531,7 +552,7 @@ def extract_file_content(uploaded_file):
 # 사이드바 메뉴: 누른 메뉴의 기능만 화면에 표시
 with st.sidebar:
     st.header("🤖 에이블 메뉴")
-    page = st.radio("기능 선택", PAGES, label_visibility="collapsed")
+    page = st.radio("기능 선택", PAGES, label_visibility="collapsed", key="menu")
     st.divider()
 
     # 회의록 업로드 (사이드바에 있어서 어느 메뉴에서든 올리고 바꿀 수 있음)
@@ -812,6 +833,14 @@ if page == PAGES[0]:
             for message in current_history:
                 with st.chat_message(message["role"]):
                     st.markdown(message["content"])
+        
+        # 질문에 메뉴 이름이 있었으면 바로가기 버튼 표시 (누르면 사이드바를 누르지 않아도 이동)
+        jump_pages = st.session_state.get("jump_pages", [])
+        if jump_pages:
+            st.caption("🔗 질문에 나온 기능으로 바로 가기")
+            for col, target in zip(st.columns(len(jump_pages)), jump_pages):
+                col.button(f"{target} 열기", key=f"jump_{target}", width="stretch",
+                           on_click=go_page, args=(target,))            
 
         # 최근 답변 음성 (새 답변일 때만 자동 재생)
         if st.session_state.last_audio:
@@ -829,6 +858,7 @@ if page == PAGES[0]:
             st.session_state.messages_dict[st.session_state.active_doc] = []
             st.session_state.notice = None
             st.session_state.last_audio = None
+            st.session_state.jump_pages = []
             st.rerun()
 
     # ── 질문 처리: 음성(실행 버튼) 또는 텍스트(보내기 버튼) ──
@@ -860,6 +890,7 @@ if page == PAGES[0]:
                 current_history.append({"role": "assistant", "content": answer})
                 st.session_state.messages_dict[st.session_state.active_doc] = current_history[-MAX_HISTORY:]
                 st.session_state.notice = {"source": source, "question": question, "email": email}
+                st.session_state.jump_pages = find_pages(question)   # 질문 속 메뉴 이름 → 바로가기 버튼
 
                 # LLM 최종 응답을 음성으로 즉시 재생 (미션 5·6 TTS)
                 if voice_on:
@@ -2628,7 +2659,6 @@ if page == PAGES[4]:
 #  - 업무 목록은 '📅 마감 캘린더'에서 추출한 일정(st.session_state.schedule)을 그대로 사용
 #  - 진행 상태(status)는 업무마다 저장: 처음 추출하면 모두 TO DO (회의에서 막 배정된 업무라 시작 전)
 #  - DONE으로 옮기면 캘린더의 완료(✅)에도 바로 반영되고, 캘린더에서 완료를 체크해도 DONE에 표시됨
-#  - ⚠️ 아래 '회의 자료실' 셀이 elif로 이어지므로, 이 셀의 마지막 문장은 반드시 if page == PAGES[5]: 블록이어야 함
 # ══════════════════════════════════════════════════════════════
 
 KANBAN_COLUMNS = [
