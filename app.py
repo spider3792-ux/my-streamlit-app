@@ -2325,79 +2325,116 @@ if page == PAGES[4]:
             st.write(b["script"])
 
 # ══════════════════════════════════════════════════════════════
-# 메뉴 6: 🍃 오늘의 할 일 (김 대리 업무 체크리스트)
+# 메뉴 6: 🍃 오늘의 할 일 (Kanban 보드: TO DO → DOING → DONE)
 #  - ⚠️ 출근길 브리핑 셀 다음에, 이 셀을 한 번만 실행하세요.
 #  - 업무 목록은 '📅 마감 캘린더'에서 추출한 일정(st.session_state.schedule)을 그대로 사용
-#  - 여기서 완료를 체크하면 캘린더의 완료 표시(✅)에도 바로 반영됨
+#  - 진행 상태(status)는 업무마다 저장: 처음 추출하면 모두 TO DO (회의에서 막 배정된 업무라 시작 전)
+#  - DONE으로 옮기면 캘린더의 완료(✅)에도 바로 반영되고, 캘린더에서 완료를 체크해도 DONE에 표시됨
+#  - ⚠️ 아래 '회의 자료실' 셀이 elif로 이어지므로, 이 셀의 마지막 문장은 반드시 if page == PAGES[5]: 블록이어야 함
 # ══════════════════════════════════════════════════════════════
 
-def today_group(item, today):
-    """업무를 마감 상황별로 묶기"""
-    if not item.get("use") or not item.get("due"):
-        return "🗓️ 기한 확인 필요"
-    if item["due"] < today:
-        return "⚠️ 기한 경과"
-    if item["due"] == today:
-        return "🔥 오늘 마감"
-    return "📋 앞으로 할 일"
+KANBAN_COLUMNS = [
+    # (상태 값, 제목, 설명, 제목 배경색, 카드 배경색)
+    ("todo",  "TO DO", "시작 전 · 해야 할 업무",      "#0E6E6E", "#FFF3D0"),
+    ("doing", "DOING", "진행 중 · 확인이 필요한 업무", "#0F8B8D", "#DCEFEA"),
+    ("done",  "DONE",  "완료 · 검토 완료",            "#0E6E6E", "#ECEFEE"),
+]
+DOING_LIMIT = 2   # 작성 TIP '02 Doing 최소로 유지': 진행 중 업무가 이보다 많으면 안내
 
-def save_today_done(index, key):
-    """체크박스를 바꾸면 일정 목록의 완료 여부를 저장"""
-    st.session_state.schedule[index]["done"] = st.session_state[key]
-    st.session_state.sched_ver += 1    # 캘린더의 완료 체크칸도 새 값으로 다시 그리기
+def kanban_status(item):
+    """업무의 보드 위치: 완료(done)가 최우선, 아니면 저장된 상태(없으면 todo)"""
+    if item.get("done"):
+        return "done"
+    status = item.get("status", "todo")
+    return "todo" if status == "done" else status   # 캘린더에서 완료를 해제한 경우 대비
+
+def move_task(index, new_status):
+    """카드 이동 버튼: 상태 저장 + 완료 여부를 캘린더와 맞춤"""
+    task = st.session_state.schedule[index]
+    task["status"] = new_status
+    task["done"] = (new_status == "done")
+    st.session_state.sched_ver += 1       # 캘린더의 완료 체크칸도 새 값으로 다시 그리기
+
+def due_badge(item, today):
+    """카드에 표시할 마감 정보 (기한이 없으면 회의 표현이나 '기한 미정')"""
+    if item.get("use") and item.get("due"):
+        return f"📅 {item['due']:%m.%d} · {deadline_label(item['due'], today)}"
+    if item.get("expr"):
+        return f"⚪ 기한 미정 · 회의 표현: {item['expr']}"
+    return "⚪ 기한 미정"
 
 if page == PAGES[5]:
     st.subheader("🍃 오늘의 할 일")
-    today = kst_today()                 # 캘린더 셀의 한국 시간 기준 오늘
+    today = kst_today()                 # 한국 시간 기준 오늘
     st.caption(f"{today:%Y.%m.%d} · 김 대리님의 업무")
 
-    # 김 대리 업무만 골라내기 (번호 i는 일정 목록에서의 위치 → 완료 저장에 사용)
+    # 김 대리 업무만 골라내기 (번호 i는 일정 목록에서의 위치 → 이동 저장에 사용)
     tasks = [(i, it) for i, it in enumerate(st.session_state.schedule)
              if it["kind"] == "김 대리 업무"]
 
     if not tasks:
         st.info("'📅 마감 캘린더' 메뉴에서 먼저 일정을 추출해 주세요.")
     else:
-        pending = [(i, it) for i, it in tasks if not it["done"]]
-        done = [(i, it) for i, it in tasks if it["done"]]
+        # 기한 미정 업무는 따로 묶지 않고 카드에 표시 + 한 줄 안내만
+        undated = sum(1 for _, it in tasks if not (it.get("use") and it.get("due")))
+        if undated:
+            st.caption(f"⚪ 기한 미정 업무 {undated}건 · '📅 마감 캘린더'의 '일정 확인 및 수정'에서 날짜를 정할 수 있어요.")
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("남은 업무", f"{len(pending)}건")
-        c2.metric("오늘 마감", f"{sum(today_group(it, today) == '🔥 오늘 마감' for _, it in pending)}건")
-        c3.metric("완료", f"{len(done)}건")
+        doing_count = sum(1 for _, it in tasks if kanban_status(it) == "doing")
+        if doing_count > DOING_LIMIT:
+            st.warning(f"진행 중인 업무가 {doing_count}건이에요. 하나씩 마무리한 뒤 다음 업무를 시작하는 게 좋아요.")
 
         ver = st.session_state.sched_ver
-        for group in ["⚠️ 기한 경과", "🔥 오늘 마감", "📋 앞으로 할 일", "🗓️ 기한 확인 필요"]:
-            items = [(i, it) for i, it in pending if today_group(it, today) == group]
-            if not items:
-                continue
-            st.markdown(f"#### {group}")
-            items.sort(key=lambda pair: pair[1]["due"] if pair[1]["use"] else date.max)
+        cols = st.columns(3, gap="medium")
 
-            for i, it in items:
-                key = f"today_{ver}_{i}"
-                with st.container(border=True):
-                    st.checkbox(it["name"], value=False, key=key,
-                                on_change=save_today_done, args=(i, key))
-                    if it["use"]:
-                        # deadline_label: 캘린더 셀의 'D-3 / 오늘 마감 / 2일 경과' 함수 재사용
-                        st.caption(f"📅 마감일: {it['due']:%Y.%m.%d} · {deadline_label(it['due'], today)}")
-                        if it["expr"]:
-                            st.caption(f"회의록 표현: {it['expr']}")
-                    elif it["expr"]:
-                        st.caption(f"🗓️ 기한: {it['expr']} · 정확한 날짜 확인 필요 (캘린더에서 지정)")
-                    else:
-                        st.caption("🗓️ 기한 미정 · 캘린더의 '일정 확인 및 수정'에서 날짜를 정할 수 있어요")
+        for col, (status, title, desc, head_color, card_color) in zip(cols, KANBAN_COLUMNS):
+            # 이 열에 들어갈 업무 (마감이 빠른 순, 기한 미정은 맨 뒤)
+            items = [(i, it) for i, it in tasks if kanban_status(it) == status]
+            items.sort(key=lambda p: p[1]["due"] if p[1].get("use") and p[1].get("due") else date.max)
 
-        if not pending:
+            with col:
+                # 열 제목 (Kanban 보드 머리글)
+                st.markdown(
+                    f"<div style='background:{head_color}; color:white; border-radius:10px; "
+                    f"padding:10px 0; text-align:center;'>"
+                    f"<div style='font-size:1.3rem; font-weight:700;'>{title} ({len(items)})</div>"
+                    f"<div style='font-size:0.8rem; opacity:0.85;'>{desc}</div></div>",
+                    unsafe_allow_html=True
+                )
+
+                if not items:
+                    st.caption("업무 없음")
+
+                for i, it in items:
+                    with st.container(border=True):
+                        # 카드 내용 (업무명 + 마감 정보)
+                        st.markdown(
+                            f"<div style='background:{card_color}; border-radius:6px; padding:10px 12px;'>"
+                            f"<div style='width:28px; border-top:3px solid #0E6E6E; margin-bottom:6px;'></div>"
+                            f"<div style='font-weight:600;'>{it['name']}</div>"
+                            f"<div style='font-size:0.8rem; color:#555; margin-top:4px;'>{due_badge(it, today)}</div>"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
+
+                        # 카드 이동 버튼 (상태에 따라 다른 버튼)
+                        if status == "todo":
+                            st.button("▶ 시작하기", key=f"kb_{ver}_{i}_start", width="stretch",
+                                      on_click=move_task, args=(i, "doing"))
+                        elif status == "doing":
+                            b1, b2 = st.columns(2)
+                            b1.button("◀ 대기", key=f"kb_{ver}_{i}_back", width="stretch",
+                                      on_click=move_task, args=(i, "todo"))
+                            b2.button("✅ 완료", key=f"kb_{ver}_{i}_done", width="stretch",
+                                      type="primary", on_click=move_task, args=(i, "done"))
+                        else:
+                            st.button("↩ 다시 진행", key=f"kb_{ver}_{i}_reopen", width="stretch",
+                                      on_click=move_task, args=(i, "doing"))
+
+        st.caption("💡 작업은 작게 나누고, DOING은 최소로 유지하고, DONE은 결과물을 전달했을 때 옮기세요.")
+
+        if all(kanban_status(it) == "done" for _, it in tasks):
             st.success("모든 담당 업무를 완료했어요! 🎉")
-
-        with st.expander(f"✅ 완료한 업무 {len(done)}건"):
-            for i, it in done:
-                key = f"today_done_{ver}_{i}"
-                st.checkbox(it["name"], value=True, key=key,
-                            on_change=save_today_done, args=(i, key))
-            st.caption("체크를 해제하면 미완료 목록으로 돌아가요.")
 
 # ══════════════════════════════════════════════════
 # 메뉴 7: 🗂️ 회의 자료실 (날짜/시간별 보존 및 조회)
