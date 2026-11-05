@@ -290,11 +290,12 @@ if page == PAGES[0]:
 
     # ── 왼쪽: 회의록 업로드 + 음성 요청 ──
     with col_left:
-        st.subheader("📄 회의록 미리보기")
+        st.subheader("📄 회의록")
         if meeting_text == "":
-            st.caption("사이드바에서 회의록 파일을 업로드하면 여기에 내용이 표시됩니다.")
+            st.caption("사이드바에서 회의록 파일을 업로드하면 여기서 내용을 볼 수 있습니다.")
         else:
-            st.text_area("회의록 내용", meeting_text, height=250, label_visibility="collapsed")
+            with st.expander("회의록 미리보기"):     # 눌러야 내용이 펼쳐짐
+                st.text_area("회의록 내용", meeting_text, height=250, label_visibility="collapsed")
 
         st.divider()
         st.subheader("🎙️ 음성으로 요청하기")
@@ -462,7 +463,7 @@ if page == PAGES[1]:
 # ── 사이드바 아래쪽: 회의록 상태 · 저장된 대화 ──
 with st.sidebar:
     status = "✅" if st.session_state.meeting_text else "⬜"
-    st.subheader(f"📋 회의록 상태 {status}")
+    st.subheader(f"📋 히스토리 관리 {status}")   # ✅: 회의록 준비됨 / ⬜: 회의록 없음
     # 저장된 대화 수 (st.metric보다 한 단계 작은 글자)
     st.markdown(
         f"<p style='font-size:0.875rem; margin:0;'>저장된 대화</p>"
