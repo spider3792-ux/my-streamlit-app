@@ -820,10 +820,8 @@ current_meeting = st.session_state.uploaded_docs.get(st.session_state.active_doc
 with intro_area:
     left, right = st.columns([1, 5])
     with left:
-        # 지금 메뉴의 이미지 → 없으면 기본 이미지 → 그것도 없으면 안내
-        img = os.path.join(IMAGE_DIR, PAGE_IMAGES.get(page, ""))
-        if not os.path.isfile(img):
-            img = IMAGE_PATH
+        files = sorted(f for f in os.listdir(IMAGE_DIR) if f.lower().endswith(".png")) if os.path.isdir(IMAGE_DIR) else []
+        img = os.path.join(IMAGE_DIR, files[PAGES.index(page) % len(files)]) if files else IMAGE_PATH
         if os.path.isfile(img):
             st.image(img, width=180)
         else:
