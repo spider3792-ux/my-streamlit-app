@@ -691,3 +691,149 @@ with col_result:
                     page_label = f' · page={page}' if page is not None else ''
                     with st.expander(f'{n}. {basename}{page_label}', expanded=(n == 1)):
                         st.write(doc['text'])
+
+
+# =====================================================================
+# [추가 기능] 차승환 — 아래 코드는 기존 app.py 맨 끝에 그대로 이어 붙입니다.
+# 기존 코드는 수정하지 않으며, 화면 위치는 맨 아래 CSS(order)로 조정합니다.
+# =====================================================================
+import json
+from datetime import datetime
+import streamlit.components.v1 as components
+
+
+# ---------------------------------------------------------------------
+# 추가 1. 채팅 검색 (사이드바 '대화 삭제' 버튼 위)
+# - 검색어가 들어간 질문·답변을 목록으로 보여 주고, 누르면 채팅창의 해당 말풍선으로 이동합니다.
+# - 이동한 말풍선은 2초 동안 청록색 테두리로 깜빡입니다.
+# ---------------------------------------------------------------------
+def go_message(index):
+    st.session_state.scroll_msg = index
+
+
+with st.sidebar:
+    with st.container(key="chat_search"):
+        term = st.text_input("채팅 검색", placeholder="🔍 채팅 검색", label_visibility="collapsed", key="chat_search_term")
+        if term:
+            hits = [(i, m) for i, m in enumerate(st.session_state.messages) if term.lower() in str(m["content"]).lower()]
+            for i, m in hits:
+                text = str(m["content"]).replace("\n", " ")
+                k = text.lower().find(term.lower())
+                icon = "🙋" if m["role"] == "user" else "✦"
+                st.button(f"{icon} …{text[max(0, k - 10):k + 25]}…", key=f"search_hit_{i}",
+                          on_click=go_message, args=(i,), use_container_width=True)
+            if not hits:
+                st.caption("검색 결과가 없어요")
+        if "scroll_msg" in st.session_state:
+            target = st.session_state.pop("scroll_msg")
+            components.html(f"""<script>/*{uuid.uuid4()}*/
+const d = window.parent.document; let n = 0;
+const go = () => {{
+  const row = d.querySelectorAll('.st-key-chat_history .aivle-chat-row')[{target}];
+  if (!row) {{ if (n++ < 30) setTimeout(go, 150); return; }}
+  row.scrollIntoView({{behavior: 'smooth', block: 'center'}});
+  row.querySelector('.aivle-chat-bubble').animate(
+    [{{boxShadow: '0 0 0 3px #16BFCB'}}, {{boxShadow: '0 0 0 3px transparent'}}], {{duration: 2000}});
+}};
+setTimeout(go, 400);
+</script>""", height=0)
+
+
+# ---------------------------------------------------------------------
+# 추가 2. 답변 피드백 (백서 보완용)
+# - 백서 인사이트 아래에 작은 👍👎 버튼을 두고, 누르면 feedback.jsonl에 기록합니다.
+# - 사이드바 맨 아래 '관리자 · 답변 피드백'에서 👎 받은 질문을 모아 보고 백서 보완에 활용합니다.
+# - Streamlit Cloud는 앱이 재시작되면 이 파일이 초기화됩니다.
+# ---------------------------------------------------------------------
+FEEDBACK_PATH = ROOT / "feedback.jsonl"
+
+
+def save_feedback(key, result):
+    value = st.session_state.get(key)
+    if value is None:
+        return
+    row = {"time": datetime.now().strftime("%m-%d %H:%M"), "value": value,
+           "question": result["question"], "answer": str(result["answer"])[:300]}
+    with open(FEEDBACK_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+result = st.session_state.last_answer
+if result and result.get("ok"):
+    with col_result:
+        with st.container(key="answer_feedback", horizontal=True, vertical_alignment="center"):
+            st.caption("이 답변이 도움이 됐나요?")
+            fb_key = "fb_" + hashlib.md5((result["question"] + str(result["answer"])).encode()).hexdigest()[:12]
+            st.feedback("thumbs", key=fb_key, on_change=save_feedback, args=(fb_key, result))
+
+with st.sidebar:
+    with st.container(key="admin_feedback"):
+        with st.expander("관리자 · 답변 피드백"):
+            rows = []
+            if FEEDBACK_PATH.is_file():
+                rows = [json.loads(line) for line in FEEDBACK_PATH.read_text(encoding="utf-8").splitlines() if line.strip()]
+            bad = [r for r in rows if r["value"] == 0]
+            st.caption(f"👍 {len(rows) - len(bad)} · 👎 {len(bad)}")
+            for r in reversed(bad[-10:]):
+                st.caption(f"{r['time']} · {r['question'][:40]}")
+            if not bad:
+                st.caption("아직 👎 받은 답변이 없어요")
+
+
+# ---------------------------------------------------------------------
+# 추가 3. 단계 탭과 추천 질문 (백서 인사이트 위)
+# - STEP을 고르면 그 시기의 추천 질문이 바뀌고, 질문 버튼을 누르면 기존 queue_example()로 바로 질문됩니다.
+# - 백서 인사이트 패널은 그대로 두고, 오른쪽 열 맨 위에 표시합니다.
+# ---------------------------------------------------------------------
+STAGE_QUESTIONS = {
+    "지원 전": ["비전공자도 따라갈 수 있나요?", "지원 자격이 어떻게 되나요?", "선발 절차는 어떻게 진행되나요?", "AI 개발자와 DX 컨설턴트 트랙은 뭐가 다른가요?"],
+    "입교 직후": ["하루 공부 시간은 어느 정도가 적당할까요?", "무엇부터 공부해야 하나요?", "지각을 몇 번 하면 결석이 되나요?", "훈련장려금은 어떻게 받나요?"],
+    "프로젝트 중": ["미니프로젝트는 어떻게 준비하나요?", "빅프로젝트 주제는 어떻게 정하나요?", "팀 협업은 어떻게 하면 좋을까요?", "발표 전에 무엇을 점검해야 하나요?"],
+    "수료·취업 준비": ["수료 기준이 어떻게 되나요?", "어떤 취업 지원을 받을 수 있나요?", "프로젝트를 포트폴리오로 어떻게 만드나요?", "수료 후 어떤 직무로 진출하나요?"],
+}
+if "stage" not in st.session_state:
+    st.session_state.stage = "입교 직후"
+
+
+def set_stage(name):
+    st.session_state.stage = name
+
+
+with col_result:
+    with st.container(key="stage_panel"):
+        st.markdown("#### 🧭 지금 어느 단계에 있나요?")
+        st.caption("단계를 고르면 그 시기에 선배들이 많이 궁금해한 질문이 나와요. 누르면 바로 질문돼요.")
+        for col, (i, name) in zip(st.columns(4), enumerate(STAGE_QUESTIONS)):
+            col.button(name, key=f"stage_tab_{i}", type="primary" if st.session_state.stage == name else "secondary",
+                       on_click=set_stage, args=(name,), use_container_width=True)
+        with st.container(key="stage_chips", horizontal=True):
+            for k, q in enumerate(STAGE_QUESTIONS[st.session_state.stage]):
+                st.button(q, key=f"stage_q_{k}", on_click=queue_example, args=(q,))
+
+
+# ---------------------------------------------------------------------
+# 추가 기능 화면 배치·디자인 (CSS)
+# - 사이드바: 채팅 검색을 '대화 삭제' 위로 올리고, 관리자 피드백은 맨 아래에 흐리게 둡니다.
+# - 오른쪽 열: 단계 탭을 백서 인사이트 위로 올리고, 피드백은 그 아래에 작게 둡니다.
+# ---------------------------------------------------------------------
+st.html("""<style>
+[data-testid="stSidebar"] .st-key-delete_conversation,
+[data-testid="stSidebar"] .st-key-delete_conversation ~ * { order: 2; }
+[data-testid="stSidebar"] [data-testid="stLayoutWrapper"]:has(> .st-key-chat_search) { order: 1 !important; }
+[data-testid="stLayoutWrapper"]:has(> .st-key-stage_panel) { order: -1; }
+.st-key-chat_search { margin-bottom: 4px; }
+.st-key-chat_search button { justify-content: flex-start; text-align: left; font-size: 12px; min-height: 32px; padding: 4px 10px; background: #F4FCFE; border: 1px solid #DAEEF2; color: #306B7C; }
+.st-key-admin_feedback { opacity: .5; margin-top: 18px; }
+.st-key-admin_feedback p, .st-key-admin_feedback summary p { font-size: 11px !important; }
+.st-key-stage_panel { background: rgba(255,255,255,.95); border: 1px solid #DFEDF3; border-radius: 24px; padding: 18px 20px; box-shadow: var(--shadow); margin-bottom: 4px; }
+.st-key-stage_panel h4 { font-weight: 800; font-size: 17px; margin-bottom: 0; }
+.st-key-stage_panel [data-testid="stCaptionContainer"] p { color: #899EAA; font-size: 11px; }
+[class*="st-key-stage_tab_"] button { min-height: 58px; border-radius: 14px; font-weight: 700; justify-content: flex-start; text-align: left; flex-direction: column; align-items: flex-start; }
+[class*="st-key-stage_tab_"] button[kind="secondary"] { background: #fff; border: 1px solid #D9EDF2; color: var(--ink); }
+.st-key-stage_tab_0 button::before { content: "STEP 0"; font-size: 11px; opacity: .7; }
+.st-key-stage_tab_1 button::before { content: "STEP 1"; font-size: 11px; opacity: .7; }
+.st-key-stage_tab_2 button::before { content: "STEP 2"; font-size: 11px; opacity: .7; }
+.st-key-stage_tab_3 button::before { content: "STEP 3"; font-size: 11px; opacity: .7; }
+.st-key-stage_chips button { border-radius: 999px; background: linear-gradient(95deg,#E4FAFB,#E9F5FF); border: 1px solid #C8E9F2; color: #204956; font-size: 13px; }
+.st-key-answer_feedback { justify-content: flex-end; opacity: .6; transform: scale(.9); transform-origin: right; }
+</style>""")
