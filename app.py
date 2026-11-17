@@ -294,15 +294,140 @@ def get_chain(api_key):
         persist_directory=str(INDEX_PATH)
     )
 
-    # 3. 검색 품질 개선: MMR 검색 적용
-    retriever = vectorstore.as_retriever(
+    # 3. 검색 품질 개선: 유사도 검색 + MMR 검색
+
+    from langchain_core.runnables import RunnableLambda
+
+    # 질문과 가장 비슷한 문서 검색
+    similarity_retriever = vectorstore.as_retriever(
+        search_type="similarity",
+        search_kwargs={"k": 5}
+    )
+
+    # 관련성과 문서 다양성을 함께 고려
+    mmr_retriever = vectorstore.as_retriever(
         search_type="mmr",
         search_kwargs={
-            "k": 5,
-            "fetch_k": 20,
-            "lambda_mult": 0.7
+            "k": 6,
+            "fetch_k": 30,
+            "lambda_mult": 0.85
         }
     )
+
+
+    def search_documents(question):
+        from langchain_core.documents import Document
+
+        # 1. 오타 보정
+        question = question.replace("프린랜서", "프리랜서")
+        question = question.replace("프리렌서", "프리랜서")
+
+        # 2. 기존 결합 검색 유지
+        docs1 = similarity_retriever.invoke(question)
+        docs2 = mmr_retriever.invoke(question)
+
+        # 3. 커리큘럼 질문은 표 제목으로 한 번 더 검색
+        extra_docs = []
+
+        if "커리큘럼" in question:
+            extra_docs = similarity_retriever.invoke(
+                "10기 DX 트랙 실제 커리큘럼 시기 과목 활동 실제로 배운 것"
+            )
+
+        # 4. 검색 결과 중 관련 표가 있는 페이지 확인
+        focus_page = None
+
+        table_question = any(
+            word in question
+            for word in ["커리큘럼", "과목", "수업", "비교", "표", "일정"]
+        )
+
+        if table_question:
+            for doc in extra_docs + docs1[:3]:
+                text = doc.page_content
+                page = doc.metadata.get("page")
+
+                if not isinstance(page, int):
+                    continue
+
+                # 커리큘럼 제목이나 표의 열 이름 확인
+                if (
+                    ("3.1" in text and "커리큘럼" in text)
+                    or ("|**시기**|" in text and "과목" in text)
+                ):
+                    focus_page = page
+                    break
+
+            # 다른 표 질문에는 상위 표 검색 결과를 활용
+            if focus_page is None:
+                for doc in docs1[:2]:
+                    if "|" in doc.page_content:
+                        focus_page = doc.metadata.get("page")
+                        break
+
+        # 5. 중복 제거 함수
+        result = []
+        seen = set()
+
+        def add_doc(doc):
+            page = doc.metadata.get("page")
+
+            # 일반 질문에서는 표지와 목차 제외
+            if "목차" not in question and "차례" not in question:
+                if isinstance(page, int) and page <= 3:
+                    return
+
+            key = (
+                doc.page_content,
+                page,
+                doc.metadata.get("source")
+            )
+
+            if key not in seen:
+                seen.add(key)
+                result.append(doc)
+
+        # 6. 필요한 경우 같은 페이지의 청크도 가져오기
+        if isinstance(focus_page, int):
+            try:
+                collection = client.get_collection(
+                    COLLECTION_NAME
+                )
+
+                page_data = collection.get(
+                    where={"page": focus_page},
+                    include=["documents", "metadatas"]
+                )
+
+                texts = page_data["documents"] or []
+                metas = page_data["metadatas"] or []
+
+                for text, meta in zip(texts, metas):
+                    if text:
+                        doc = Document(
+                            page_content=text,
+                            metadata=meta or {}
+                        )
+                        add_doc(doc)
+
+            except Exception:
+                logger.exception(
+                    "[RAG] 같은 페이지 문서 검색 실패"
+                )
+
+        # 7. 기존 검색 결과도 함께 추가
+        for doc in docs1 + extra_docs + docs2:
+            add_doc(doc)
+
+            if len(result) >= 10:
+                break
+
+        return result[:10]
+
+
+    # 기존 RAG 체인에 연결
+    retriever = RunnableLambda(search_documents)
+
 
     # 4. 검색된 문서에 출처 정보 추가
     def format_base_docs(docs):
