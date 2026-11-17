@@ -615,6 +615,11 @@ with st.sidebar:
         clear_chat()
         st.rerun()
 
+    # [추가 기능] 차승환 — 질문하기: 선배 Q&A·멘토·운영자 화면에서 처음 질문 화면(채팅)으로 돌아갑니다.
+    if st.button("✦ 질문하기", key="go_chat_home", use_container_width=True):
+        st.session_state.app_view = "chat"
+        st.rerun()
+
         # ── 선배들에게 질문하기! ──
     st.markdown("**🎓 선배들에게 질문하기!**")
 
