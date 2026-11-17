@@ -12,6 +12,7 @@ import sqlite3
 from contextlib import closing
 import uuid
 import chromadb
+from chromadb.api.client import SharedSystemClient  # [수정]
 from pathlib import Path
 from operator import itemgetter
 
@@ -260,8 +261,9 @@ def make_chain(retriever, api_key):
 
 
 @st.cache_resource(show_spinner=False)
-def get_chain(api_key):
+def get_chain(api_key, index_version=None):  # [수정]
     """기본 AIVLE 백서 전용 RAG 검색 및 답변 생성"""
+    SharedSystemClient.clear_system_cache()  # [수정]
 
     # 1. 기존 벡터 저장소 확인
     if not (INDEX_PATH / "chroma.sqlite3").is_file():
@@ -641,20 +643,30 @@ def run_question(question):
         full_answer = "백서 인덱스(chroma_db)가 없습니다. 기존 코랩 RAG에서 인덱스를 생성해 배포해 주세요."
         ok = False
     else:
-        try:
-            with st.spinner("백서에서 답변하는 중..."):
-                rag_chain, retriever = get_chain(api_key)
-                full_answer = rag_chain.invoke({"input": question})
-                matched_docs = retriever.invoke(question)
-                docs = [
-                    {"text": d.page_content, "metadata": dict(d.metadata or {})}
-                    for d in matched_docs
-                ]
-            ok = True
-        except Exception:
-            logger.exception("[RAG ERROR] 기본 백서 검색 실행 오류")
-            full_answer = "백서 검색 중 오류가 발생했습니다. Streamlit Cloud 로그를 확인해 주세요."
-            ok = False
+        # [수정] 시작
+        ok = False
+        error = None
+        for attempt in range(2):
+            try:
+                with st.spinner("백서에서 답변하는 중..."):
+                    index_version = (INDEX_PATH / "chroma.sqlite3").stat().st_mtime
+                    rag_chain, retriever = get_chain(api_key, index_version)
+                    full_answer = rag_chain.invoke({"input": question})
+                    matched_docs = retriever.invoke(question)
+                    docs = [
+                        {"text": d.page_content, "metadata": dict(d.metadata or {})}
+                        for d in matched_docs
+                    ]
+                ok = True
+                break
+            except Exception as e:
+                logger.exception("[RAG ERROR] 기본 백서 검색 실행 오류")
+                error = e
+                get_chain.clear()
+                SharedSystemClient.clear_system_cache()
+        if not ok:
+            full_answer = f"백서 검색 중 오류가 발생했습니다. ({type(error).__name__}: {str(error)[:150]})"
+        # [수정] 끝
 
     if ok:
         try:
